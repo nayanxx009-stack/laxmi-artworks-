@@ -1,0 +1,44 @@
+{
+  "entities": {
+    "Inquiry": {
+      "title": "Inquiry",
+      "description": "A customer inquiry for artwork",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "phone": { "type": "string" },
+        "message": { "type": "string" },
+        "status": {
+          "type": "string",
+          "enum": ["Pending", "In Progress", "Completed"]
+        },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["userId", "name", "email", "phone", "message", "status", "createdAt"]
+    },
+    "User": {
+      "title": "User",
+      "description": "A registered user",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["name", "email", "createdAt"]
+    }
+  },
+  "firestore": {
+    "inquiries/{inquiryId}": {
+      "schema": { "$ref": "#/entities/Inquiry" },
+      "description": "Stores user inquiries"
+    },
+    "users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "Stores user profiles"
+    }
+  }
+}

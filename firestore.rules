@@ -1,0 +1,81 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+    
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isAdmin() {
+      return request.auth != null && 'email' in request.auth.token && (
+        (request.auth.token.email == 'nayanxx009@gmail.com' || request.auth.token.email == 'gargsubhalaxmi@gmail.com' || request.auth.token.email == 'admin@example.com' || request.auth.token.email == 'server@laxmiartworks.local') ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.token.email))
+      );
+    }
+    
+    match /fcm_tokens/{tokenId} {
+      allow read, write: if isSignedIn();
+    }
+
+    match /users/{userId} {
+      allow read: if isSignedIn() && request.auth.uid == userId || isAdmin();
+      allow write: if isSignedIn() && request.auth.uid == userId;
+    }
+    
+    match /inquiries/{inquiryId} {
+      allow read, create, update: if true;
+      allow delete: if isAdmin();
+    }
+    
+    match /orders/{orderId} {
+      allow get: if true;
+      allow list: if isAdmin() || (isSignedIn() && request.auth.token.email != null && resource.data.email == request.auth.token.email);
+      allow create: if true;
+      allow update: if true;
+      allow delete: if isAdmin();
+    }
+    
+    match /subscribers/{subscriberId} {
+      allow write: if true;
+      allow read, delete: if isAdmin();
+    }
+    
+    match /reviews/{reviewId} {
+      allow read: if true;
+      allow create: if true;
+      allow update, delete: if isAdmin();
+    }
+    
+    match /gallery/{imageId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+    
+    match /admins/{adminId} {
+      allow read: if isAdmin() || (isSignedIn() && request.auth.token.email == adminId);
+      allow write: if isAdmin();
+    }
+    
+    
+    match /coupons/{couponId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+    
+    match /chats/{chatId} {
+      allow read, write: if true;
+      
+      match /messages/{messageId} {
+        allow read, write: if true;
+      }
+    }
+
+    match /settings/{settingId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+  }
+}

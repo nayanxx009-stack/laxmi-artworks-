@@ -1,0 +1,135 @@
+import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
+import { db, auth, googleProvider } from './firebase';
+import { doc, setDoc } from 'firebase/firestore';
+import { requestFCMToken, onForegroundMessage } from './fcm';
+import {
+  User,
+  sendEmailVerification,
+  signInWithPopup,
+  signOut,
+  onAuthStateChanged,
+  GoogleAuthProvider,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  sendPasswordResetEmail,
+  setPersistence,
+  browserLocalPersistence,
+  browserSessionPersistence
+} from 'firebase/auth';
+
+interface AuthContextType {
+  user: User | null;
+  loading: boolean;
+  accessToken: string | null;
+  loginWithGoogle: () => Promise<void>;
+  loginWithEmail: (e: string, p: string, r: boolean) => Promise<any>;
+  signupWithEmail: (e: string, p: string) => Promise<void>;
+  resetPassword: (e: string) => Promise<void>;
+  logout: () => Promise<void>;
+}
+
+const AuthContext = createContext<AuthContextType>({
+  user: null,
+  loading: true,
+  accessToken: null,
+  loginWithGoogle: async () => {},
+  loginWithEmail: async () => {},
+  signupWithEmail: async () => {},
+  resetPassword: async () => {},
+  logout: async () => {}
+});
+
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [accessToken, setAccessToken] = useState<string | null>(null);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      setLoading(false);
+      if (u) {
+        setDoc(doc(db, 'users', u.uid), {
+          uid: u.uid,
+          email: u.email,
+          displayName: u.displayName,
+          photoURL: u.photoURL,
+          lastLogin: Date.now()
+        }, { merge: true }).catch(err => console.error("Failed to save user to db", err));
+      } else {
+        setAccessToken(null);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const loginWithGoogle = async () => {
+    try {
+      await setPersistence(auth, browserLocalPersistence);
+      const result = await signInWithPopup(auth, googleProvider);
+      const credential = GoogleAuthProvider.credentialFromResult(result);
+      if (credential?.accessToken) {
+        setAccessToken(credential.accessToken);
+      }
+    } catch (error: any) {
+      if (error.code !== 'auth/popup-closed-by-user' && error.code !== 'auth/cancelled-popup-request') {
+        console.error("Login failed:", error);
+      }
+      throw error;
+    }
+  };
+
+  const loginWithEmail = async (email: string, pass: string, remember: boolean) => {
+    try {
+      await setPersistence(auth, browserLocalPersistence);
+      return await signInWithEmailAndPassword(auth, email, pass);
+    } catch (error: any) {
+      // Avoid noisy console errors for expected user errors
+      if (error.code !== 'auth/invalid-credential') {
+        console.error("Login with email failed:", error);
+      }
+      throw error;
+    }
+  };
+
+  const signupWithEmail = async (email: string, pass: string) => {
+    try {
+      await setPersistence(auth, browserLocalPersistence);
+      const userCred = await createUserWithEmailAndPassword(auth, email, pass);
+      if (userCred.user) {
+        await sendEmailVerification(userCred.user);
+      }
+    } catch (error: any) {
+      if (error.code !== 'auth/email-already-in-use') {
+        console.error("Signup failed:", error);
+      }
+      throw error;
+    }
+  };
+
+  const resetPassword = async (email: string) => {
+    try {
+      await sendPasswordResetEmail(auth, email);
+    } catch (error: any) {
+      console.error("Password reset failed:", error);
+      throw error;
+    }
+  };
+
+  const logout = async () => {
+    try {
+      await signOut(auth);
+      setAccessToken(null);
+    } catch (error) {
+      console.error("Logout failed:", error);
+    }
+  };
+
+  return (
+    <AuthContext.Provider value={{ user, loading, accessToken, loginWithGoogle, loginWithEmail, signupWithEmail, resetPassword, logout }}>
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+export const useAuth = () => useContext(AuthContext);

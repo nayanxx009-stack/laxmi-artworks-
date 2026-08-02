@@ -1,0 +1,6 @@
+{
+  "name": "Laxmi Artworks",
+  "description": "Premium artist portfolio for Laxmi Artworks featuring sketches, portraits, anime art, and digital illustrations.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

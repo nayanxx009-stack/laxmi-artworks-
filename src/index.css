@@ -1,0 +1,59 @@
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Playfair Display", ui-serif, Georgia, serif;
+}
+
+body {
+  @apply bg-[#030303] text-neutral-300 font-sans antialiased overflow-x-hidden selection:bg-amber-500/30;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  @apply text-neutral-50;
+}
+
+.glass {
+  @apply bg-[#0a0a0a]/80 backdrop-blur-lg border border-white/5;
+}
+
+.glass-card {
+  @apply bg-[#0f0f0f] border border-white/5 hover:border-amber-500/30 transition-all duration-500;
+}
+
+.text-gradient {
+  @apply bg-clip-text text-transparent bg-gradient-to-r from-amber-200 via-amber-400 to-orange-400;
+}
+
+.bg-gradient-glow {
+  @apply relative;
+}
+
+.bg-gradient-glow::before {
+  content: "";
+  @apply absolute -inset-0.5 bg-gradient-to-r from-amber-500/20 to-orange-500/20 rounded-2xl blur-md opacity-0 group-hover:opacity-100 transition duration-700 z-0 pointer-events-none;
+}
+
+@keyframes marquee {
+  0% { transform: translateX(0%); }
+  100% { transform: translateX(-50%); }
+}
+
+.animate-marquee {
+  animation: marquee 30s linear infinite;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #030303;
+}
+::-webkit-scrollbar-thumb {
+  background: #222;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #d97706;
+}
