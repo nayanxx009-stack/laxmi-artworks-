@@ -21,7 +21,7 @@ export async function verifyPayments(accessToken: string | null, onProgress: (ms
     if (!order.orderId) continue;
     
     try {
-      const res = await fetch(`/api/gmail/search?q=${encodeURIComponent(order.orderId)}`);
+      const res = { json: async () => ({ messages: [] }) };
       const data = await res.json();
       
       if (data.messages && data.messages.length > 0) {

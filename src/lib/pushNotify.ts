@@ -6,7 +6,7 @@ export const sendPushToUser = async (userId: string, title: string, body: string
     const tokenDoc = await getDoc(doc(db, 'fcm_tokens', userId));
     if (tokenDoc.exists()) {
       const { token } = tokenDoc.data();
-      await fetch('/api/send-push', {
+      await fetch((import.meta.env.VITE_API_URL || '') + '/api/send-push', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token, title, body, url })
@@ -33,7 +33,7 @@ export const sendPushToAdmins = async (title: string, body: string, url: string 
     });
 
     if (tokens.length > 0) {
-      await fetch('/api/broadcast-push', {
+      await fetch((import.meta.env.VITE_API_URL || '') + '/api/broadcast-push', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tokens, title, body, url })

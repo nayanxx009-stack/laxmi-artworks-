@@ -1,7 +1,7 @@
 import { generateInvoice } from '../lib/generateInvoice';
 import React, { useState, useEffect, FormEvent, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { onAuthStateChanged, signInWithPopup, signOut, User } from 'firebase/auth';
+import { onAuthStateChanged, signInWithRedirect, signOut, User } from 'firebase/auth';
 import { adminAuth, adminGoogleProvider, adminDb as db, storage } from '../lib/firebase';
 import { collection, getDocs, doc, updateDoc, deleteDoc, query, orderBy, setDoc, getDoc, limit, onSnapshot } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
@@ -41,7 +41,7 @@ export default function AdminPanel() {
 
   const loginWithGoogle = async () => {
     try {
-      await signInWithPopup(adminAuth, adminGoogleProvider);
+      await signInWithRedirect(adminAuth, adminGoogleProvider);
     } catch (err: any) {
       if (err.code !== 'auth/popup-closed-by-user' && err.code !== 'auth/cancelled-popup-request') {
         console.error("Login failed", err);
@@ -336,7 +336,7 @@ export default function AdminPanel() {
       
       if (isNewShipment && editForm.email) {
          try {
-           await fetch('/api/notify-shipment', {
+           await fetch((import.meta.env.VITE_API_URL || '') + '/api/notify-shipment', {
              method: 'POST',
              headers: { 'Content-Type': 'application/json' },
              body: JSON.stringify({

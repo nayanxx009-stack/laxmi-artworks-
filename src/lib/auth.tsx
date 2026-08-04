@@ -5,7 +5,8 @@ import { requestFCMToken, onForegroundMessage } from './fcm';
 import {
   User,
   sendEmailVerification,
-  signInWithPopup,
+  getRedirectResult,
+  signInWithRedirect,
   signOut,
   onAuthStateChanged,
   GoogleAuthProvider,
@@ -45,6 +46,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [accessToken, setAccessToken] = useState<string | null>(null);
 
   useEffect(() => {
+    getRedirectResult(auth).then((result) => {
+      if (result) {
+        const credential = GoogleAuthProvider.credentialFromResult(result);
+        if (credential?.accessToken) {
+          setAccessToken(credential.accessToken);
+        }
+      }
+    }).catch(console.error);
+
     const unsubscribe = onAuthStateChanged(auth, (u) => {
       setUser(u);
       setLoading(false);
@@ -66,11 +76,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const loginWithGoogle = async () => {
     try {
       await setPersistence(auth, browserLocalPersistence);
-      const result = await signInWithPopup(auth, googleProvider);
-      const credential = GoogleAuthProvider.credentialFromResult(result);
-      if (credential?.accessToken) {
-        setAccessToken(credential.accessToken);
-      }
+      await signInWithRedirect(auth, googleProvider); return;
+      
+      
     } catch (error: any) {
       if (error.code !== 'auth/popup-closed-by-user' && error.code !== 'auth/cancelled-popup-request') {
         console.error("Login failed:", error);

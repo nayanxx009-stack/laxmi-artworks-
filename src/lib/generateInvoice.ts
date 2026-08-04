@@ -152,7 +152,7 @@ Framing: ${order.framing || 'N/A'}`;
   } else if (type === 'email') {
     const pdfBase64 = doc.output('datauristring');
     try {
-      const res = await fetch('/api/send-invoice', {
+      const res = await fetch((import.meta.env.VITE_API_URL || '') + '/api/send-invoice', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: order.email, order, pdfBase64 })

@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from "express";
+import cors from "cors";
 import nodemailer from "nodemailer";
 import path from "path";
 import { createServer as createViteServer } from "vite";
@@ -206,7 +207,8 @@ async function verifyPaymentsBackground() {
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = process.env.PORT || 3000;
+  app.use(cors());
   app.use(express.json());
 
   // API Routes
@@ -355,7 +357,7 @@ Laxmi Artworks`,
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get('*all', (req, res) => {
+    app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
