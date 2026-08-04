@@ -46,30 +46,38 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [accessToken, setAccessToken] = useState<string | null>(null);
 
   useEffect(() => {
-    getRedirectResult(auth).then((result) => {
-      if (result) {
-        const credential = GoogleAuthProvider.credentialFromResult(result);
-        if (credential?.accessToken) {
-          setAccessToken(credential.accessToken);
-        }
-      }
-    }).catch(console.error);
+    let unsubscribe = () => {};
 
-    const unsubscribe = onAuthStateChanged(auth, (u) => {
-      setUser(u);
+    setPersistence(auth, browserLocalPersistence).then(() => {
+      getRedirectResult(auth).then((result) => {
+        if (result) {
+          const credential = GoogleAuthProvider.credentialFromResult(result);
+          if (credential?.accessToken) {
+            setAccessToken(credential.accessToken);
+          }
+        }
+      }).catch(console.error);
+  
+      unsubscribe = onAuthStateChanged(auth, (u) => {
+        setUser(u);
+        setLoading(false);
+        if (u) {
+          setDoc(doc(db, 'users', u.uid), {
+            uid: u.uid,
+            email: u.email,
+            displayName: u.displayName,
+            photoURL: u.photoURL,
+            lastLogin: Date.now()
+          }, { merge: true }).catch(err => console.error("Failed to save user to db", err));
+        } else {
+          setAccessToken(null);
+        }
+      });
+    }).catch((err) => {
+      console.error("Failed to set persistence", err);
       setLoading(false);
-      if (u) {
-        setDoc(doc(db, 'users', u.uid), {
-          uid: u.uid,
-          email: u.email,
-          displayName: u.displayName,
-          photoURL: u.photoURL,
-          lastLogin: Date.now()
-        }, { merge: true }).catch(err => console.error("Failed to save user to db", err));
-      } else {
-        setAccessToken(null);
-      }
     });
+    
     return () => unsubscribe();
   }, []);
 
@@ -141,3 +149,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 }
 
 export const useAuth = () => useContext(AuthContext);
+
+export function ProtectedRoute({ children }: { children: ReactNode }) {
+  const { user, loading } = useAuth();
+  
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#030303] flex items-center justify-center">
+        <div className="w-10 h-10 border-4 border-amber-500 border-t-transparent rounded-full animate-spin"></div>
+      </div>
+    );
+  }
+  
+  if (!user) {
+    window.location.href = '/login';
+    return null;
+  }
+  
+  return <>{children}</>;
+}

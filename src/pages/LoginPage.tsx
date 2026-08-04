@@ -21,9 +21,6 @@ export default function LoginPage() {
       const userCred = await loginWithEmail(email, password, remember);
       if (userCred && userCred.user && !userCred.user.emailVerified) {
         setError('Please verify your email address. Check your inbox for the verification link.');
-        const { signOut } = await import('firebase/auth');
-        const { auth } = await import('../lib/firebase');
-        await signOut(auth);
       } else {
         window.location.href = '/';
       }
