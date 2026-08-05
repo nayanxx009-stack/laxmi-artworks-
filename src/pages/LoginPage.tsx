@@ -2,6 +2,7 @@ import { motion } from 'motion/react';
 import { Mail, Lock, ArrowRight, Eye, EyeOff } from 'lucide-react';
 import React, { useState } from 'react';
 import { useAuth } from '../lib/auth';
+import { useNavigate, Link } from 'react-router-dom';
 
 export default function LoginPage() {
   const { loginWithGoogle, loginWithEmail } = useAuth();
@@ -11,6 +12,7 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const navigate = useNavigate();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -22,7 +24,7 @@ export default function LoginPage() {
       if (userCred && userCred.user && !userCred.user.emailVerified) {
         setError('Please verify your email address. Check your inbox for the verification link.');
       } else {
-        window.location.href = '/';
+        navigate('/');
       }
     } catch (err: any) {
       if (err.code === 'auth/invalid-credential' || err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password') {
@@ -39,7 +41,7 @@ export default function LoginPage() {
     setError('');
     try {
       await loginWithGoogle();
-      window.location.href = '/';
+      navigate('/');
     } catch (err: any) {
       if (err.code === 'auth/popup-closed-by-user' || err.code === 'auth/cancelled-popup-request' || err.message?.includes('cross-origin')) {
         setError("Sign-in popup was closed. Please try again, or open the app in a new tab if you're in a preview.");
@@ -54,9 +56,9 @@ export default function LoginPage() {
       <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-amber-500/10 rounded-full blur-[120px] pointer-events-none" />
       <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-yellow-600/10 rounded-full blur-[120px] pointer-events-none" />
       
-      <a href="/" className="absolute top-6 left-6 text-neutral-400 hover:text-amber-400 transition-colors flex items-center gap-2">
+      <Link to="/" className="absolute top-6 left-6 text-neutral-400 hover:text-amber-400 transition-colors flex items-center gap-2">
         <ArrowRight className="rotate-180" size={16} /> Back to Home
-      </a>
+      </Link>
 
       <motion.div 
         initial={{ opacity: 0, scale: 0.95 }}
@@ -179,9 +181,9 @@ export default function LoginPage() {
         <div className="mt-8 text-center text-sm text-neutral-400">
           <p>
             Don't have an account?{' '}
-            <a href="/signup" className="text-amber-400 hover:text-amber-300 transition-colors">
+            <Link to="/signup" className="text-amber-400 hover:text-amber-300 transition-colors">
               Sign up
-            </a>
+            </Link>
           </p>
         </div>
       </motion.div>

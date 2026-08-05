@@ -1,13 +1,15 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 export default function Footer() {
   const [clickCount, setClickCount] = useState(0);
+  const navigate = useNavigate();
 
   const handleSecretClick = () => {
     const newCount = clickCount + 1;
     setClickCount(newCount);
     if (newCount === 5) {
-      window.location.href = '/secret-admin';
+      navigate('/secret-admin');
     }
   };
 

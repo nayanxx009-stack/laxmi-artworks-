@@ -4,6 +4,7 @@ import { useState, useEffect, FormEvent } from 'react';
 import { useAuth } from '../lib/auth';
 import { db } from '../lib/firebase';
 import { collection, query, where, getDocs, addDoc, orderBy, limit, onSnapshot } from 'firebase/firestore';
+import { useNavigate } from 'react-router-dom';
 
 interface Review {
   id: string;
@@ -24,6 +25,7 @@ export default function Testimonials() {
   const [formRating, setFormRating] = useState(5);
   const [formComment, setFormComment] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const navigate = useNavigate();
 
   
 
@@ -141,7 +143,7 @@ export default function Testimonials() {
                     <p className="text-neutral-400 mb-6">You must be logged in to write a review.</p>
                     <button
                       type="button"
-                      onClick={() => window.location.href = '/login'}
+                      onClick={() => navigate('/login')}
                       className="px-8 py-3 bg-white text-black font-bold uppercase tracking-widest text-sm hover:bg-neutral-200 transition-colors rounded-full"
                     >
                       Login to Continue

@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { useAuth } from '../lib/auth';
 import { useLanguage } from '../lib/LanguageContext';
 import InquiryStatusModal from './InquiryStatusModal';
+import { useNavigate } from 'react-router-dom';
 
 export default function Navbar() {
   const [isScrolled, setIsScrolled] = useState(false);
@@ -11,6 +12,7 @@ export default function Navbar() {
   const [isStatusModalOpen, setIsStatusModalOpen] = useState(false);
   const { user, loginWithGoogle, logout } = useAuth();
   const [userDropdownOpen, setUserDropdownOpen] = useState(false);
+  const navigate = useNavigate();
 
   useEffect(() => {
     const handleScroll = () => {
@@ -96,7 +98,7 @@ export default function Navbar() {
             </div>
           ) : (
             <button 
-              onClick={() => window.location.href = "/login"}
+              onClick={() => navigate("/login")}
               className="text-xs font-semibold uppercase tracking-widest text-neutral-400 hover:text-white transition-colors flex items-center gap-2"
             >
               <UserIcon size={14} /> Login
@@ -168,7 +170,7 @@ export default function Navbar() {
             
             {!user && (
                <button 
-                 onClick={() => { window.location.href = "/login"; setMobileMenuOpen(false); }}
+                 onClick={() => { navigate("/login"); setMobileMenuOpen(false); }}
                  className="text-lg font-display tracking-wider text-neutral-300 hover:text-white"
                >
                  LOGIN

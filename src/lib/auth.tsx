@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useState, ReactNode } from 'react
 import { db, auth, googleProvider } from './firebase';
 import { doc, setDoc } from 'firebase/firestore';
 import { requestFCMToken, onForegroundMessage } from './fcm';
+import { Navigate } from 'react-router-dom';
 import {
   User,
   sendEmailVerification,
@@ -97,7 +98,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const loginWithEmail = async (email: string, pass: string, remember: boolean) => {
     try {
-      await setPersistence(auth, browserLocalPersistence);
+      const persistence = remember ? browserLocalPersistence : browserSessionPersistence;
+      await setPersistence(auth, persistence);
       return await signInWithEmailAndPassword(auth, email, pass);
     } catch (error: any) {
       // Avoid noisy console errors for expected user errors
@@ -162,8 +164,7 @@ export function ProtectedRoute({ children }: { children: ReactNode }) {
   }
   
   if (!user) {
-    window.location.href = '/login';
-    return null;
+    return <Navigate to="/login" replace />;
   }
   
   return <>{children}</>;
