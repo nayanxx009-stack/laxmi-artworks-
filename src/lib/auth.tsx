@@ -47,38 +47,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [accessToken, setAccessToken] = useState<string | null>(null);
 
   useEffect(() => {
-    let unsubscribe = () => {};
+    getRedirectResult(auth).then((result) => {
+      if (result) {
+        const credential = GoogleAuthProvider.credentialFromResult(result);
+        if (credential?.accessToken) {
+          setAccessToken(credential.accessToken);
+        }
+      }
+    }).catch(console.error);
 
-    setPersistence(auth, browserLocalPersistence).then(() => {
-      getRedirectResult(auth).then((result) => {
-        if (result) {
-          const credential = GoogleAuthProvider.credentialFromResult(result);
-          if (credential?.accessToken) {
-            setAccessToken(credential.accessToken);
-          }
-        }
-      }).catch(console.error);
-  
-      unsubscribe = onAuthStateChanged(auth, (u) => {
-        setUser(u);
-        setLoading(false);
-        if (u) {
-          setDoc(doc(db, 'users', u.uid), {
-            uid: u.uid,
-            email: u.email,
-            displayName: u.displayName,
-            photoURL: u.photoURL,
-            lastLogin: Date.now()
-          }, { merge: true }).catch(err => console.error("Failed to save user to db", err));
-        } else {
-          setAccessToken(null);
-        }
-      });
-    }).catch((err) => {
-      console.error("Failed to set persistence", err);
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
       setLoading(false);
+      if (u) {
+        setDoc(doc(db, 'users', u.uid), {
+          uid: u.uid,
+          email: u.email,
+          displayName: u.displayName,
+          photoURL: u.photoURL,
+          lastLogin: Date.now()
+        }, { merge: true }).catch(err => console.error("Failed to save user to db", err));
+      } else {
+        setAccessToken(null);
+      }
     });
-    
+
     return () => unsubscribe();
   }, []);
 

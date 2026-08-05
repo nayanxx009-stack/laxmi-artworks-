@@ -21,7 +21,6 @@ const app = initializeApp(firebaseConfig);
 
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
-setPersistence(auth, browserLocalPersistence).catch(console.error);
 export const storage = getStorage(app);
 export const messaging = typeof window !== 'undefined' && 'serviceWorker' in navigator ? getMessaging(app) : null;
 
@@ -30,5 +29,4 @@ export const googleProvider = new GoogleAuthProvider();
 const adminApp = initializeApp(firebaseConfig, 'admin');
 export const adminDb = getFirestore(adminApp, firebaseConfig.firestoreDatabaseId);
 export const adminAuth = getAuth(adminApp);
-setPersistence(adminAuth, browserLocalPersistence).catch(console.error);
 export const adminGoogleProvider = new GoogleAuthProvider();
