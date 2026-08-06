@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { adminDb as db } from '../lib/firebase';
+import { db } from '../lib/firebase';
 import { MessageSquare, Send, ArrowLeft, FileText, Megaphone, Users, User, X } from 'lucide-react';
 import { getDocs, collection, query, orderBy, onSnapshot, addDoc, doc, updateDoc } from 'firebase/firestore';
 import { sendPushToUser } from '../lib/pushNotify';

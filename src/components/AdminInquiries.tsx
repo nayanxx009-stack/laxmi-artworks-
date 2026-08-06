@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { collection, query, orderBy, onSnapshot, deleteDoc, doc, updateDoc } from 'firebase/firestore';
-import { adminDb as db } from '../lib/firebase';
+import { db } from '../lib/firebase';
 import { Trash2, Mail, ExternalLink, CheckCircle } from 'lucide-react';
 
 export default function AdminInquiries() {

@@ -1,8 +1,8 @@
 import { generateInvoice } from '../lib/generateInvoice';
 import React, { useState, useEffect, FormEvent, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { onAuthStateChanged, signInWithRedirect, signOut, User } from 'firebase/auth';
-import { adminAuth, adminGoogleProvider, adminDb as db, storage } from '../lib/firebase';
+import { onAuthStateChanged, signInWithPopup, signOut, User } from 'firebase/auth';
+import { auth, googleProvider, db, storage } from '../lib/firebase';
 import { collection, getDocs, doc, updateDoc, deleteDoc, query, orderBy, setDoc, getDoc, limit, onSnapshot } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import jsPDF from 'jspdf';
@@ -32,7 +32,7 @@ export default function AdminPanel() {
   const [authLoading, setAuthLoading] = useState(true);
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(adminAuth, (u) => {
+    const unsub = onAuthStateChanged(auth, (u) => {
       setUser(u);
       setAuthLoading(false);
     });
@@ -41,7 +41,7 @@ export default function AdminPanel() {
 
   const loginWithGoogle = async () => {
     try {
-      await signInWithRedirect(adminAuth, adminGoogleProvider);
+      await signInWithPopup(auth, googleProvider);
     } catch (err: any) {
       if (err.code !== 'auth/popup-closed-by-user' && err.code !== 'auth/cancelled-popup-request') {
         console.error("Login failed", err);
@@ -51,7 +51,7 @@ export default function AdminPanel() {
 
   const logout = async () => {
     try {
-      await signOut(adminAuth);
+      
     } catch (err) {
       console.error(err);
     }
@@ -134,7 +134,7 @@ export default function AdminPanel() {
           setIsAdmin(false);
           setPasswordFlow('none');
           setLoginError("You are not authorized to access the Admin Panel.");
-          await signOut(adminAuth);
+          
           setCheckingAuth(false);
           return;
         }

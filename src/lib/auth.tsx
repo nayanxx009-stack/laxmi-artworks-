@@ -7,7 +7,7 @@ import {
   User,
   sendEmailVerification,
   getRedirectResult,
-  signInWithRedirect,
+  signInWithPopup,
   signOut,
   onAuthStateChanged,
   GoogleAuthProvider,
@@ -78,7 +78,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const loginWithGoogle = async () => {
     try {
       await setPersistence(auth, browserLocalPersistence);
-      await signInWithRedirect(auth, googleProvider); return;
+      await signInWithPopup(auth, googleProvider); return;
       
       
     } catch (error: any) {

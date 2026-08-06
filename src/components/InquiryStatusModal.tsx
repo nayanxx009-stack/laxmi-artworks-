@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { motion, AnimatePresence } from 'motion/react';
 import { X, Clock, RefreshCw, CheckCircle2, ShieldCheck, Package, Palette, Truck, Search, QrCode, Copy } from 'lucide-react';
 import { useAuth } from '../lib/auth';
@@ -128,7 +129,7 @@ export default function InquiryStatusModal({ isOpen, onClose }: InquiryStatusMod
             {!user && !trackingIdInput && (
               <div className="text-center py-8 mb-6 border border-dashed border-white/10 rounded-2xl bg-neutral-950/40">
                 <p className="text-neutral-400 text-sm">Please log in to view your orders, or enter a Tracking ID above.</p>
-                <a href="/login" className="mt-4 inline-block px-6 py-2 bg-amber-500 text-black text-sm font-bold rounded-full">Sign In</a>
+                <Link to="/login" className="mt-4 inline-block px-6 py-2 bg-amber-500 text-black text-sm font-bold rounded-full">Sign In</Link>
               </div>
             )}
 

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { collection, query, orderBy, onSnapshot, limit, getDocs, updateDoc, doc } from 'firebase/firestore';
-import { adminDb as db } from '../lib/firebase';
+import { db } from '../lib/firebase';
 import { Bell, ShoppingBag, MessageSquare, Mail, CheckCircle, Package } from 'lucide-react';
 import { useAuth } from '../lib/auth';
 

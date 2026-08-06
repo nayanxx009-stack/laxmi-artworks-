@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Download, Upload, Database, CheckCircle2 } from 'lucide-react';
 import { collection, getDocs, setDoc, doc } from 'firebase/firestore';
-import { adminDb as db } from '../lib/firebase';
+import { db } from '../lib/firebase';
 
 export default function AdminBackup() {
   const [status, setStatus] = useState<string>('');
