@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom';
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { X } from 'lucide-react';
@@ -52,7 +53,7 @@ export default function GlobalPopup() {
 
   return (
     <AnimatePresence>
-      {isVisible && (
+      {isVisible && typeof document !== 'undefined' && createPortal(
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
           <motion.div
             initial={{ opacity: 0, scale: 0.9, y: 20 }}
@@ -72,7 +73,8 @@ export default function GlobalPopup() {
               className="w-full object-contain max-h-[85vh] bg-black"
             />
           </motion.div>
-        </div>
+        </div>,
+        document.body
       )}
     </AnimatePresence>
   );

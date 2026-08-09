@@ -9,6 +9,10 @@ import { generateInvoice } from '../lib/generateInvoice';
 
 export default function LiveChat() {
   const [isOpen, setIsOpen] = useState(false);
+  const isOpenRef = useRef(isOpen);
+  useEffect(() => {
+    isOpenRef.current = isOpen;
+  }, [isOpen]);
   const [messages, setMessages] = useState<any[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const { user } = useAuth();
@@ -17,7 +21,7 @@ export default function LiveChat() {
   const [isTyping, setIsTyping] = useState(false);
   const [adminTyping, setAdminTyping] = useState(false);
   const [notificationStatus, setNotificationStatus] = useState<string>(
-    typeof Notification !== 'undefined' ? Notification.permission : 'default'
+    typeof Notification !== 'undefined' ? Notification.permission : 'unsupported'
   );
 
   const handleDownloadInvoice = async (orderId: string) => {
@@ -51,7 +55,20 @@ export default function LiveChat() {
       setIsOpen(true);
     }
     
-    const unsubFCM = onForegroundMessage();
+    const unsubFCM = onForegroundMessage((payload: any) => {
+      // Do not show browser notification if chat is open
+      if (!isOpenRef.current && Notification.permission === 'granted') {
+         try {
+           new Notification(payload.notification?.title || 'New Message', {
+             body: payload.notification?.body,
+             icon: '/vite.svg',
+             data: payload.data
+           });
+         } catch(e) {
+           console.error('Failed to show foreground notification:', e);
+         }
+      }
+    });
     return () => {
       window.removeEventListener('open-live-chat', handleOpen);
       if (navigator.serviceWorker) {
@@ -61,20 +78,26 @@ export default function LiveChat() {
     };
   }, []);
 
-  const handleRequestNotifications = async () => {
-    if (!chatId) return;
-    const token = await requestFCMToken(chatId, user?.email || 'guest@example.com');
-    if (token) {
-      setNotificationStatus('granted');
-      alert("Notifications enabled!");
-    } else {
-      setNotificationStatus(Notification.permission);
-      if (Notification.permission === 'denied') {
-        alert("Notifications are blocked in your browser settings.");
-      }
+  const handleRequestNotifications = async (silent = false) => {
+    if (!chatId || typeof Notification === 'undefined') return;
+    try {
+       const token = await requestFCMToken(chatId, user?.email || 'guest@example.com');
+       if (token) {
+         setNotificationStatus('granted');
+         if (!silent) alert("Notifications enabled!");
+       } else {
+         setNotificationStatus(Notification.permission);
+         if (!silent && Notification.permission === 'denied') {
+           alert("Notifications are blocked in your browser settings.");
+         }
+       }
+    } catch (e) {
+       console.error(e);
     }
   };
 
+  // Removed automatic prompt to comply with mobile browser policies requiring user gestures
+  
   useEffect(() => {
     let cId = user?.uid || localStorage.getItem('guest_chat_id');
     if (!cId) {
@@ -155,7 +178,7 @@ export default function LiveChat() {
       <div className="bg-gradient-to-r from-amber-600 to-amber-500 text-black p-4 flex justify-between items-center shadow-md">
         <h3 className="font-bold text-sm tracking-widest uppercase flex items-center gap-2"><MessageSquare size={16}/> Live Support</h3>
         <div className="flex items-center gap-2">
-          {notificationStatus !== 'granted' && (
+          {notificationStatus !== 'granted' && notificationStatus !== 'unsupported' && (
             <button onClick={handleRequestNotifications} title="Enable Notifications" className="hover:opacity-70 p-1 bg-black/10 rounded-full transition-colors">
               <Bell size={16} className="animate-pulse" />
             </button>

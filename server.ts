@@ -10,18 +10,21 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
 import { initializeApp as initAdmin, cert, getApps } from 'firebase-admin/app';
 import { getMessaging } from 'firebase-admin/messaging';
-import { getFirestore, query, collection, where, getDocs, updateDoc, doc } from 'firebase/firestore';
+import { getFirestore, query, collection, where, getDocs, updateDoc, doc, setDoc, deleteDoc } from 'firebase/firestore';
 
 
-// Initialize Firebase Admin if Service Account is provided
-if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
-  try {
+// Initialize Firebase Admin
+try {
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
     const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
     initAdmin({ credential: cert(serviceAccount) });
-    console.log('[Server] Firebase Admin initialized for FCM.');
-  } catch (e) {
-    console.error('[Server] Failed to initialize Firebase Admin:', e.message);
+    console.log('[Server] Firebase Admin initialized for FCM with service account.');
+  } else {
+    initAdmin({ projectId: "laxmi-artworks" });
+    console.log('[Server] Firebase Admin initialized for FCM with ADC.');
   }
+} catch (e) {
+  console.error('[Server] Failed to initialize Firebase Admin:', e.message);
 }
 
 const firebaseConfig = {
@@ -56,21 +59,21 @@ async function verifyPaymentsBackground() {
   isCheckingEmails = true;
   
   try {
-    const q = query(collection(db, 'orders'), where('paymentStatus', 'in', ['Pending Payment', 'Payment Submitted', 'Pending Verification']));
+    const q = query(collection(db, 'payments'), where('verificationStatus', 'in', ['Pending', 'Waiting For Payment', 'Verifying']));
     const snapshot = await getDocs(q);
     if (snapshot.empty) {
       isCheckingEmails = false;
       return;
     }
     
-    const pendingOrders = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as any));
+    const pendingPayments = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as any));
     
     if (!imapConfig.auth.user || !imapConfig.auth.pass) {
-      for (const order of pendingOrders) {
-         if (!order.paymentVerificationNote) {
-            await updateDoc(doc(db, 'orders', order.id), {
-               paymentVerificationNote: "IMAP credentials not configured in backend",
-               paymentStatus: 'Pending Verification'
+      for (const pay of pendingPayments) {
+         if (!pay.verificationNote) {
+            await updateDoc(doc(db, 'payments', pay.id), {
+               verificationNote: "IMAP credentials not configured in backend",
+               verificationStatus: 'Failed'
             });
          }
       }
@@ -78,7 +81,7 @@ async function verifyPaymentsBackground() {
       return;
     }
 
-    console.log(`[Payment Verifier] Found ${pendingOrders.length} pending orders. Connecting to IMAP...`);
+    console.log(`[Payment Verifier] Found ${pendingPayments.length} pending payments. Connecting to IMAP...`);
 
     const client = new ImapFlow({
       host: imapConfig.host,
@@ -87,44 +90,20 @@ async function verifyPaymentsBackground() {
       auth: imapConfig.auth,
       logger: false
     });
+
     client.on('error', (err) => {
       console.log("[Payment Verifier] IMAP Client Error:", err.message);
     });
 
     try {
-      console.log(`[Payment Verifier] Connecting to IMAP server ${imapConfig.host}...`);
       await client.connect();
-      console.log(`[Payment Verifier] Connection result: SUCCESS`);
-      console.log(`[Payment Verifier] Authentication result: SUCCESS for ${imapConfig.auth.user}`);
     } catch (err) {
       const errorMsg = err.response || err.responseText || err.message || "Unknown IMAP error";
-      console.log(`[Payment Verifier] Connection/Authentication result: FAILED`);
-      console.log(`[Payment Verifier] Exact server response: ${errorMsg}`);
-      for (const order of pendingOrders) {
-         if (order.paymentStatus === 'Pending Verification' || order.paymentStatus === 'Payment Submitted' || order.paymentStatus === 'Pending Payment') {
-            await updateDoc(doc(db, 'orders', order.id), {
-               paymentVerificationNote: `IMAP Error: ${errorMsg}`,
-               paymentStatus: 'Pending Verification'
-            });
-         }
-      }
-      isCheckingEmails = false;
-      return;
-    }
-
-    let lock;
-    try {
-      lock = await client.getMailboxLock('INBOX');
-      console.log(`[Payment Verifier] Inbox access result: SUCCESS`);
-    } catch (err) {
-      const errorMsg = err.response || err.responseText || err.message || "Unknown IMAP error";
-      console.log(`[Payment Verifier] Inbox access result: FAILED`);
-      console.log(`[Payment Verifier] Exact server response: ${errorMsg}`);
-      for (const order of pendingOrders) {
-         if (order.paymentStatus === 'Pending Verification' || order.paymentStatus === 'Payment Submitted' || order.paymentStatus === 'Pending Payment') {
-            await updateDoc(doc(db, 'orders', order.id), {
-               paymentVerificationNote: `IMAP Inbox Error: ${errorMsg}`,
-               paymentStatus: 'Pending Verification'
+      for (const pay of pendingPayments) {
+         if (pay.verificationStatus !== 'Failed') {
+            await updateDoc(doc(db, 'payments', pay.id), {
+               verificationNote: `IMAP Inbox Error: ${errorMsg}`,
+               verificationStatus: 'Failed'
             });
          }
       }
@@ -134,73 +113,95 @@ async function verifyPaymentsBackground() {
     }
 
     try {
-      const d = new Date();
-      d.setDate(d.getDate() - 3); // check last 3 days
-      
-      const messages = [];
-      for await (let msg of client.fetch({ since: d }, { source: true, envelope: true })) {
-        messages.push(msg);
-      }
-      
-      for (const order of pendingOrders) {
-        if (!order.orderId) continue;
+      const lock = await client.getMailboxLock('INBOX');
+      try {
+        const d = new Date();
+        d.setDate(d.getDate() - 3);
         
-        let matchingEmails = [];
-        
-        for (const msg of messages) {
-           const parsed = await simpleParser(msg.source);
-           const fullText = (parsed.subject + " " + parsed.text).toUpperCase();
-           
-           // Skip our own inquiry notification emails
-           if (parsed.subject?.includes('New Commission Inquiry')) continue;
-           
-           if (fullText.includes(order.orderId.toUpperCase())) {
-             matchingEmails.push(parsed);
-           }
+        const messages = [];
+        for await (let msg of client.fetch({ since: d }, { source: true, envelope: true })) {
+          messages.push(msg);
         }
         
-        if (matchingEmails.length === 1) {
-           const parsed = matchingEmails[0];
-           const fullText = (parsed.subject + " " + parsed.text).toUpperCase();
-           
-           // Extract UTR/Transaction ID if possible (usually 12 digits for UPI)
-           const utrMatch = fullText.match(/\b\d{12}\b/);
-           const utr = utrMatch ? utrMatch[0] : null;
-           
-           if (fullText.includes(String(order.amount))) {
-              console.log(`[Payment Verifier] Verified payment for ${order.orderId}`);
-              await updateDoc(doc(db, 'orders', order.id), {
-                status: 'Drafting & Concept', // advance status automatically
-                paymentStatus: 'Paid',
-                transactionReference: utr || parsed.messageId || 'IMAP-VERIFIED',
-                paymentVerificationNote: `Auto Verified (IMAP) - Sender: ${parsed.from?.text || 'Unknown'}`
-              });
-           } else {
-              await updateDoc(doc(db, 'orders', order.id), {
-                paymentStatus: 'Pending Verification',
-                paymentVerificationNote: `Email found but amount mismatch (Expected: ${order.amount})`
-              });
-           }
-        } else if (matchingEmails.length > 1) {
-           await updateDoc(doc(db, 'orders', order.id), {
-             paymentStatus: 'Pending Verification',
-             paymentVerificationNote: `Multiple emails matched Order ID ${order.orderId}. Manual verification required.`
-           });
-        } else {
-           // No emails matched yet
-           if (order.paymentStatus !== 'Pending Verification') {
-               await updateDoc(doc(db, 'orders', order.id), {
-                 paymentVerificationNote: `Waiting for payment email in Inbox...`
+        for (const pay of pendingPayments) {
+          if (!pay.orderId) continue;
+
+          let matchingEmails = [];
+          
+          for (const msg of messages) {
+             const parsed = await simpleParser(msg.source);
+             const fullText = (parsed.subject + " " + parsed.text).toUpperCase();
+             
+             if (parsed.subject?.includes('New Commission Inquiry')) continue;
+             
+             if (fullText.includes(pay.orderId.toUpperCase()) || (pay.manualUTR && fullText.includes(pay.manualUTR))) {
+               matchingEmails.push(parsed);
+             }
+          }
+          
+          if (matchingEmails.length > 0) {
+             const parsed = matchingEmails[0];
+             const fullText = (parsed.subject + " " + parsed.text).toUpperCase();
+             
+             const utrMatch = fullText.match(/\b\d{12}\b/);
+             const utr = utrMatch ? utrMatch[0] : null;
+             
+             if (fullText.includes(String(pay.amount)) || pay.manualUTR) {
+                console.log(`[Payment Verifier] Verified payment for ${pay.orderId}`);
+                
+                await updateDoc(doc(db, 'payments', pay.id), {
+                  verificationStatus: 'Paid',
+                  transactionId: utr || pay.manualUTR || parsed.messageId || 'IMAP-VERIFIED',
+                  verificationNote: `Auto Verified (IMAP) - Sender: ${parsed.from?.text || 'Unknown'}`
+                });
+
+                const orderData = {
+                  orderId: pay.orderId,
+                  userId: pay.formData.userId || 'guest',
+                  name: pay.formData.name || 'Unknown',
+                  email: pay.formData.email || 'unknown@example.com',
+                  phone: pay.formData.phone || '0000000000',
+                  message: pay.formData.message || '',
+                  amount: pay.amount,
+                  paymentStatus: 'Paid',
+                  status: 'Drafting & Concept',
+                  transactionReference: utr || pay.manualUTR || parsed.messageId || 'IMAP-VERIFIED',
+                  createdAt: Date.now()
+                };
+                
+                await setDoc(doc(db, 'orders', pay.orderId), orderData);
+
+                await updateDoc(doc(db, 'payments', pay.id), {
+                  verificationStatus: 'Order Confirmed'
+                });
+             } else {
+                await updateDoc(doc(db, 'payments', pay.id), {
+                  verificationStatus: 'Failed',
+                  verificationNote: `Email found but amount mismatch (Expected: ${pay.amount})`
+                });
+             }
+          } else {
+             if (Date.now() - pay.timestamp > 15 * 60 * 1000) {
+               await updateDoc(doc(db, 'payments', pay.id), {
+                 verificationStatus: 'Failed',
+                 verificationNote: `Timeout waiting for payment email.`
                });
-           }
+             } else if (pay.verificationStatus !== 'Verifying' && pay.verificationStatus !== 'Waiting For Payment') {
+               await updateDoc(doc(db, 'payments', pay.id), {
+                 verificationNote: `Waiting for payment email in Inbox...`
+               });
+             }
+          }
         }
+      } finally {
+        lock.release();
       }
-    } finally {
-      lock.release();
+      await client.logout();
+    } catch (error) {
+      console.log("[Payment Verifier] Verification paused:", error.message);
     }
-    await client.logout();
   } catch (error) {
-    console.log("[Payment Verifier] Verification paused:", error.message);
+    console.error("[Payment Verifier] Global error:", error);
   }
   isCheckingEmails = false;
 }
@@ -218,9 +219,15 @@ async function startServer() {
 
   // Send Push Notification via FCM
   app.post("/api/send-push", async (req, res) => {
-    const { token, title, body, url } = req.body;
+    const { token, title, body, url, userId } = req.body;
+    console.log(`[Push API] Attempting to send push to token: ${token?.substring(0, 10)}...`);
     if (!getApps().length) {
+      console.error('[Push API] Firebase Admin not configured.');
       return res.status(500).json({ error: 'Firebase Admin not configured' });
+    }
+    if (!token) {
+      console.error('[Push API] Missing token.');
+      return res.status(400).json({ error: 'Missing token' });
     }
     try {
       const message = {
@@ -228,20 +235,52 @@ async function startServer() {
         notification: { title, body },
         data: { url: url || '/' }
       };
-      await getMessaging().send(message);
-      res.json({ success: true });
+      const response = await getMessaging().send(message);
+      console.log(`[Push API] Successfully sent message: ${response}`);
+      res.json({ success: true, messageId: response });
     } catch (err) {
-      console.error('FCM Error:', err);
-      res.status(500).json({ error: err.message });
+      console.error('[Push API] FCM Error:', err.message);
+      
+      // Remove invalid token from Firestore
+      if (err.code === 'messaging/invalid-registration-token' || 
+          err.code === 'messaging/registration-token-not-registered') {
+        console.log(`[Push API] Token is invalid or expired. Removing token: ${token}`);
+        try {
+          // Find which document has this token and remove it
+          const fcmTokensRef = collection(db, 'fcm_tokens');
+          const snapshot = await getDocs(fcmTokensRef);
+          snapshot.forEach(async (docSnap) => {
+            const data = docSnap.data();
+            if (data.tokens && data.tokens.includes(token)) {
+               const newTokens = data.tokens.filter(t => t !== token);
+               await updateDoc(doc(db, 'fcm_tokens', docSnap.id), { tokens: newTokens });
+            } else if (data.token === token) {
+               await deleteDoc(doc(db, 'fcm_tokens', docSnap.id));
+            }
+          });
+        } catch(delErr) {
+          console.error('[Push API] Failed to delete token:', delErr);
+        }
+      }
+      
+      res.status(500).json({ error: err.message, code: err.code });
     }
   });
-
   // Broadcast Push Notification
   app.post("/api/broadcast-push", async (req, res) => {
     const { tokens, title, body, url } = req.body;
+    console.log(`[Push API] Attempting to broadcast to ${tokens?.length || 0} tokens`);
+    
     if (!getApps().length) {
+      console.error('[Push API] Firebase Admin not configured.');
       return res.status(500).json({ error: 'Firebase Admin not configured' });
     }
+    
+    if (!tokens || !tokens.length) {
+      console.error('[Push API] Missing tokens.');
+      return res.status(400).json({ error: 'Missing tokens' });
+    }
+    
     try {
       const message = {
         tokens,
@@ -249,29 +288,39 @@ async function startServer() {
         data: { url: url || '/' }
       };
       const response = await getMessaging().sendEachForMulticast(message);
+      
+      console.log(`[Push API] Broadcast success count: ${response.successCount}, failure count: ${response.failureCount}`);
+      
+      if (response.failureCount > 0) {
+        response.responses.forEach((resp, idx) => {
+          if (!resp.success) {
+             console.error(`[Push API] Failed to send to token ${tokens[idx]}: ${resp.error?.message}`);
+          }
+        });
+      }
+      
       res.json({ success: true, response });
     } catch (err) {
-      console.error('FCM Broadcast Error:', err);
+      console.error('[Push API] FCM Broadcast Error:', err.message);
       res.status(500).json({ error: err.message });
     }
   });
-
   
   app.post("/api/send-invoice", async (req, res) => {
     const { email, order, pdfBase64 } = req.body;
-    if (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) {
+    if (!process.env.IMAP_USER || !process.env.IMAP_PASS) {
        return res.status(500).json({ success: false, error: 'Email credentials not configured' });
     }
     try {
       const transporter = nodemailer.createTransport({
         service: 'gmail',
         auth: {
-          user: process.env.GMAIL_USER,
-          pass: process.env.GMAIL_APP_PASSWORD
+          user: process.env.IMAP_USER,
+          pass: process.env.IMAP_PASS
         }
       });
       const mailOptions = {
-        from: process.env.GMAIL_USER,
+        from: process.env.IMAP_USER,
         to: email,
         subject: `Invoice for Order ${order.id}`,
         text: `Dear ${order.name},

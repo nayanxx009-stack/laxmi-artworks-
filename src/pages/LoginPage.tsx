@@ -40,7 +40,7 @@ export default function LoginPage() {
   const handleGoogleSignIn = async () => {
     setError('');
     try {
-      await loginWithGoogle();
+      await loginWithGoogle(remember);
       navigate('/');
     } catch (err: any) {
       if (err.code === 'auth/popup-closed-by-user' || err.code === 'auth/cancelled-popup-request' || err.message?.includes('cross-origin')) {

@@ -28,9 +28,7 @@ export default function App() {
       <Route 
         path="/secret-admin" 
         element={
-          <ProtectedRoute>
-            <AdminPanel />
-          </ProtectedRoute>
+          <AdminPanel />
         } 
       />
       <Route path="/" element={

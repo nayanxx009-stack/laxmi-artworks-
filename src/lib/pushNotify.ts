@@ -5,12 +5,16 @@ export const sendPushToUser = async (userId: string, title: string, body: string
   try {
     const tokenDoc = await getDoc(doc(db, 'fcm_tokens', userId));
     if (tokenDoc.exists()) {
-      const { token } = tokenDoc.data();
-      await fetch((import.meta.env.VITE_API_URL || '') + '/api/send-push', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token, title, body, url })
-      });
+      const data = tokenDoc.data();
+      const tokens = data.tokens || (data.token ? [data.token] : []);
+      
+      if (tokens.length > 0) {
+        await fetch((import.meta.env.VITE_API_URL || '') + '/api/broadcast-push', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tokens, title, body, url })
+        });
+      }
     }
   } catch (err) {
     console.error('Failed to send push to user', err);

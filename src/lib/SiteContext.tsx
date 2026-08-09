@@ -10,6 +10,7 @@ export interface SiteConfig {
   popupButtonUrl?: string;
   popupImage?: string;
   popupAutoClose?: number;
+  popupFrequency?: string;
   announcementBanner: string;
   announcementVisible: boolean;
   heroTitle: string;

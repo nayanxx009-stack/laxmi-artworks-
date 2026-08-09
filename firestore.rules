@@ -17,7 +17,8 @@ service cloud.firestore {
     }
     
     match /fcm_tokens/{tokenId} {
-      allow read, write: if isSignedIn();
+      allow read: if isSignedIn();
+      allow write: if true;
     }
 
     match /users/{userId} {
@@ -71,6 +72,10 @@ service cloud.firestore {
       match /messages/{messageId} {
         allow read, write: if true;
       }
+    }
+
+    match /payments/{paymentId} {
+      allow read, write: if true;
     }
 
     match /settings/{settingId} {

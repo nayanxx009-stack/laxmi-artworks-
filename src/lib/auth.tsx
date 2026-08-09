@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 import { db, auth, googleProvider } from './firebase';
-import { doc, setDoc } from 'firebase/firestore';
+import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { requestFCMToken, onForegroundMessage } from './fcm';
 import { Navigate } from 'react-router-dom';
 import {
@@ -19,11 +19,14 @@ import {
   browserSessionPersistence
 } from 'firebase/auth';
 
+const MASTER_ADMINS = ["gargsubhalaxmi@gmail.com", "nayanxx009@gmail.com", "bolt36520@gmail.com", "admin@example.com"];
+
 interface AuthContextType {
   user: User | null;
+  role: 'admin' | 'user' | null;
   loading: boolean;
   accessToken: string | null;
-  loginWithGoogle: () => Promise<void>;
+  loginWithGoogle: (remember: boolean) => Promise<void>;
   loginWithEmail: (e: string, p: string, r: boolean) => Promise<any>;
   signupWithEmail: (e: string, p: string) => Promise<void>;
   resetPassword: (e: string) => Promise<void>;
@@ -32,6 +35,7 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType>({
   user: null,
+  role: null,
   loading: true,
   accessToken: null,
   loginWithGoogle: async () => {},
@@ -43,6 +47,7 @@ const AuthContext = createContext<AuthContextType>({
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
+  const [role, setRole] = useState<'admin' | 'user' | null>(null);
   const [loading, setLoading] = useState(true);
   const [accessToken, setAccessToken] = useState<string | null>(null);
 
@@ -56,31 +61,52 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     }).catch(console.error);
 
-    const unsubscribe = onAuthStateChanged(auth, (u) => {
-      setUser(u);
-      setLoading(false);
+    const unsubscribe = onAuthStateChanged(auth, async (u) => {
       if (u) {
-        setDoc(doc(db, 'users', u.uid), {
-          uid: u.uid,
-          email: u.email,
-          displayName: u.displayName,
-          photoURL: u.photoURL,
-          lastLogin: Date.now()
-        }, { merge: true }).catch(err => console.error("Failed to save user to db", err));
+        try {
+          const userDocRef = doc(db, 'users', u.uid);
+          const userDoc = await getDoc(userDocRef);
+          let currentRole: 'admin' | 'user' = 'user';
+          
+          if (userDoc.exists()) {
+            const data = userDoc.data();
+            currentRole = MASTER_ADMINS.includes(u.email?.toLowerCase() || '') ? 'admin' : (data.role || 'user');
+          } else {
+            currentRole = MASTER_ADMINS.includes(u.email?.toLowerCase() || '') ? 'admin' : 'user';
+          }
+
+          await setDoc(userDocRef, {
+            uid: u.uid,
+            email: u.email,
+            displayName: u.displayName,
+            photoURL: u.photoURL,
+            role: currentRole,
+            lastLogin: Date.now()
+          }, { merge: true });
+
+          setRole(currentRole);
+          setUser(u);
+        } catch (err) {
+          console.error("Failed to save user to db", err);
+          setUser(u); // fallback
+          setRole(MASTER_ADMINS.includes(u.email?.toLowerCase() || '') ? 'admin' : 'user');
+        }
       } else {
+        setUser(null);
+        setRole(null);
         setAccessToken(null);
       }
+      setLoading(false);
     });
 
     return () => unsubscribe();
   }, []);
 
-  const loginWithGoogle = async () => {
+  const loginWithGoogle = async (remember: boolean) => {
     try {
-      await setPersistence(auth, browserLocalPersistence);
-      await signInWithPopup(auth, googleProvider); return;
-      
-      
+      const persistence = remember ? browserLocalPersistence : browserSessionPersistence;
+      await setPersistence(auth, persistence);
+      await signInWithPopup(auth, googleProvider);
     } catch (error: any) {
       if (error.code !== 'auth/popup-closed-by-user' && error.code !== 'auth/cancelled-popup-request') {
         console.error("Login failed:", error);
@@ -95,7 +121,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await setPersistence(auth, persistence);
       return await signInWithEmailAndPassword(auth, email, pass);
     } catch (error: any) {
-      // Avoid noisy console errors for expected user errors
       if (error.code !== 'auth/invalid-credential') {
         console.error("Login with email failed:", error);
       }
@@ -131,13 +156,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       await signOut(auth);
       setAccessToken(null);
+      setRole(null);
+      setUser(null);
+      localStorage.clear();
+      sessionStorage.clear();
+      window.location.href = '/';
     } catch (error) {
       console.error("Logout failed:", error);
     }
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, accessToken, loginWithGoogle, loginWithEmail, signupWithEmail, resetPassword, logout }}>
+    <AuthContext.Provider value={{ user, role, loading, accessToken, loginWithGoogle, loginWithEmail, signupWithEmail, resetPassword, logout }}>
       {children}
     </AuthContext.Provider>
   );
@@ -146,7 +176,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 export const useAuth = () => useContext(AuthContext);
 
 export function ProtectedRoute({ children }: { children: ReactNode }) {
-  const { user, loading } = useAuth();
+  const { user, role, loading } = useAuth();
   
   if (loading) {
     return (
@@ -156,8 +186,8 @@ export function ProtectedRoute({ children }: { children: ReactNode }) {
     );
   }
   
-  if (!user) {
-    return <Navigate to="/login" replace />;
+  if (!user || role !== 'admin') {
+    return <Navigate to="/" replace />;
   }
   
   return <>{children}</>;

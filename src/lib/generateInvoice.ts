@@ -158,13 +158,11 @@ Framing: ${order.framing || 'N/A'}`;
         body: JSON.stringify({ email: order.email, order, pdfBase64 })
       });
       const data = await res.json();
-      if (data.success) {
-        alert('Invoice sent successfully to ' + order.email);
-      } else {
-        alert('Failed to send invoice: ' + data.error);
+      if (!data.success) {
+        throw new Error(data.error || 'Failed to send invoice');
       }
     } catch (e: any) {
-      alert('Error sending invoice: ' + e.message);
+      throw new Error(e.message || 'Error sending invoice');
     }
   }
 };

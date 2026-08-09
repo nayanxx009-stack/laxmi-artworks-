@@ -15,6 +15,7 @@ interface Review {
   comment: string;
   createdAt: number;
   status: string;
+  adminReply?: string;
 }
 
 export default function Testimonials() {
@@ -47,7 +48,7 @@ export default function Testimonials() {
         data.push({ id: doc.id, ...doc.data() } as Review);
       });
       data.sort((a, b) => b.createdAt - a.createdAt);
-      setReviews(data.filter(r => r.status === 'Approved'));
+      setReviews(data.filter(r => r.status?.toLowerCase() === 'approved'));
       setLoading(false);
     }, (err) => {
       console.error("Failed to fetch reviews via snapshot", err);
@@ -63,7 +64,7 @@ export default function Testimonials() {
     
     setIsSubmitting(true);
     const isGuest = !user;
-    const reviewStatus = isGuest ? "Pending Approval" : "Approved";
+    const reviewStatus = isGuest ? "pending" : "approved";
     
     try {
       await addDoc(collection(db, 'reviews'), {
@@ -242,9 +243,15 @@ export default function Testimonials() {
                  ))}
               </div>
 
-              <p className="text-neutral-300 font-light leading-relaxed italic mb-8 flex-grow">
+              <p className="text-neutral-300 font-light leading-relaxed italic mb-4 flex-grow">
                 "{test.comment}"
               </p>
+              {test.adminReply && (
+                <div className="bg-amber-500/10 border border-amber-500/20 p-4 rounded-xl mb-6">
+                  <p className="text-amber-500 font-bold text-xs uppercase tracking-widest mb-1">Reply from Laxmi Artworks</p>
+                  <p className="text-amber-100/80 text-sm font-light">"{test.adminReply}"</p>
+                </div>
+              )}
 
               <div className="flex items-center gap-4 pt-6 border-t border-white/5">
                 <div className="w-12 h-12 bg-neutral-900 border border-white/10 flex items-center justify-center text-amber-500 font-display text-xl rounded-full overflow-hidden">

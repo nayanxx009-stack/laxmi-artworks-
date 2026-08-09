@@ -37,7 +37,7 @@ export default function SignupPage() {
   const handleGoogleSignIn = async () => {
     setError('');
     try {
-      await loginWithGoogle();
+      await loginWithGoogle(true);
       navigate('/');
     } catch (err: any) {
       if (err.code === 'auth/popup-closed-by-user' || err.message?.includes('cross-origin')) {

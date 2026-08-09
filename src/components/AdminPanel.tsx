@@ -1,7 +1,9 @@
+import { createPortal } from 'react-dom';
 import { generateInvoice } from '../lib/generateInvoice';
 import React, { useState, useEffect, FormEvent, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { onAuthStateChanged, signInWithPopup, signOut, User } from 'firebase/auth';
+import { User } from 'firebase/auth';
+import { useAuth } from '../lib/auth';
 import { auth, googleProvider, db, storage } from '../lib/firebase';
 import { collection, getDocs, doc, updateDoc, deleteDoc, query, orderBy, setDoc, getDoc, limit, onSnapshot } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
@@ -16,7 +18,49 @@ import AdminNotifications from './AdminNotifications';
 
 import { useSiteConfig, defaultSiteConfig, SiteConfig } from '../lib/SiteContext';
 
-const MASTER_ADMINS = ["gargsubhalaxmi@gmail.com", "nayanxx009@gmail.com", "admin@example.com"];
+const MASTER_ADMINS = ["gargsubhalaxmi@gmail.com", "nayanxx009@gmail.com", "bolt36520@gmail.com", "admin@example.com"];
+
+const compressImage = (file: File, maxWidth: number, maxHeight: number, quality: number = 0.7): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (event) => {
+      const img = new Image();
+      img.src = event.target?.result as string;
+      img.onload = () => {
+        let width = img.width;
+        let height = img.height;
+
+        if (width > height) {
+          if (width > maxWidth) {
+            height = Math.round((height * maxWidth) / width);
+            width = maxWidth;
+          }
+        } else {
+          if (height > maxHeight) {
+            width = Math.round((width * maxHeight) / height);
+            height = maxHeight;
+          }
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          reject(new Error("Failed to get canvas context"));
+          return;
+        }
+        ctx.drawImage(img, 0, 0, width, height);
+        // Force jpeg for compression
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.onerror = (error) => reject(error);
+    };
+    reader.onerror = (error) => reject(error);
+  });
+};
+
 
 async function hashPassword(password: string) {
   const msgUint8 = new TextEncoder().encode(password);
@@ -28,44 +72,16 @@ async function hashPassword(password: string) {
 
 
 export default function AdminPanel() {
-  const [user, setUser] = useState<User | null>(null);
-  const [authLoading, setAuthLoading] = useState(true);
-
-  useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => {
-      setUser(u);
-      setAuthLoading(false);
-    });
-    return () => unsub();
-  }, []);
-
-  const loginWithGoogle = async () => {
-    try {
-      await signInWithPopup(auth, googleProvider);
-    } catch (err: any) {
-      if (err.code !== 'auth/popup-closed-by-user' && err.code !== 'auth/cancelled-popup-request') {
-        console.error("Login failed", err);
-      }
-    }
-  };
-
-  const logout = async () => {
-    try {
-      
-    } catch (err) {
-      console.error(err);
-    }
-  };
+  const { user, role, logout, loginWithGoogle } = useAuth();
   
   const [isAdmin, setIsAdmin] = useState(false);
   const [isOwner, setIsOwner] = useState(false);
-  const [adminDocData, setAdminDocData] = useState<any>(null);
-  const [checkingAuth, setCheckingAuth] = useState(true);
+  const [checkingAuth, setCheckingAuth] = useState(false);
+  const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
+  const [saveSuccessMessage, setSaveSuccessMessage] = useState('');
   
-  // Payment verification state
-  
-
-  // Authentication Flow States
+  // We can remove passwordFlow entirely, but keeping state to avoid refactoring the whole file if it uses it.
+  // We will force it to 'none' always.
   const [passwordFlow, setPasswordFlow] = useState<'none' | 'setup' | 'enter'>('none');
   const [adminPasswordInput, setAdminPasswordInput] = useState('');
   const [passwordError, setPasswordError] = useState('');
@@ -74,7 +90,6 @@ export default function AdminPanel() {
 
   const [activeTab, setActiveTab] = useState<'dashboard' | 'site' | 'admins' | 'gallery' | 'system'>('dashboard');
   
-
   const [orders, setOrders] = useState<any[]>([]);
   const [dashboardView, setDashboardView] = useState<"orders" | "users" | "subscribers" | "reviews" | "analytics" | "backup" | "coupons" | "chat">("analytics");
   const [usersList, setUsersList] = useState<any[]>([]);
@@ -88,7 +103,8 @@ export default function AdminPanel() {
 
   const siteConfig = useSiteConfig();
   const [localSiteConfig, setLocalSiteConfig] = useState<SiteConfig>(defaultSiteConfig);
-  const [isUploadingPopup, setIsUploadingPopup] = useState(false);
+  const [popupUploadState, setPopupUploadState] = useState<'idle' | 'uploading' | 'processing' | 'saving' | 'success' | 'error'>('idle');
+  const [popupUploadMessage, setPopupUploadMessage] = useState('');
   const [showPopupPreview, setShowPopupPreview] = useState(false);
   const [savingSite, setSavingSite] = useState(false);
 
@@ -108,66 +124,39 @@ export default function AdminPanel() {
   }, [siteConfig]);
 
   useEffect(() => {
-    const checkAdmin = async () => {
-      if (authLoading) return;
-      if (!user) {
-        setCheckingAuth(false);
-        setPasswordFlow('none');
-        return;
-      }
-      try {
-        if (!user.email) {
-          setIsAdmin(false);
-          setCheckingAuth(false);
-          return;
-        }
-
-        let isMaster = MASTER_ADMINS.includes(user.email.toLowerCase());
-        let isAuthorized = isMaster;
-
-        const adminDoc = await getDoc(doc(db, 'admins', user.email));
-        if (adminDoc.exists()) {
-          isAuthorized = true;
-        }
-
-        if (!isAuthorized) {
-          setIsAdmin(false);
-          setPasswordFlow('none');
-          setLoginError("You are not authorized to access the Admin Panel.");
-          
-          setCheckingAuth(false);
-          return;
-        }
-
-        setIsAdmin(true);
-        setIsOwner(isMaster);
-
-        if (adminDoc.exists()) {
-          setAdminDocData(adminDoc.data());
-          if (!adminDoc.data().password) {
-            setPasswordFlow('setup');
+    let active = true;
+    const checkAdminData = async () => {
+      if (user && role === 'admin') {
+        const MASTER_ADMINS = ["gargsubhalaxmi@gmail.com", "nayanxx009@gmail.com", "bolt36520@gmail.com", "admin@example.com"];
+        if (active) setIsOwner(MASTER_ADMINS.includes(user.email?.toLowerCase() || ''));
+        if (active) setIsAdmin(true);
+        
+        try {
+          const adminDoc = await getDoc(doc(db, 'admins', user.email!));
+          if (adminDoc.exists() && adminDoc.data().password) {
+            if (active) setPasswordFlow('enter');
           } else {
-            // ALWAYS verify password, even on trusted devices
-            setPasswordFlow('enter');
+            if (active) setPasswordFlow('setup');
           }
-        } else {
-          // Master admin first time
-          await setDoc(doc(db, 'admins', user.email), { email: user.email, addedAt: Date.now() });
-          setPasswordFlow('setup');
-        }
-      } catch (e: any) {
-        if (e.code === 'unavailable' || e.message?.includes('offline')) {
-          alert("Failed to connect to the database. If you are using an ad blocker, strict privacy settings, or are in a preview iframe, please open the app in a new tab or disable the blocker.");
-        } else {
+        } catch (e) {
           console.error(e);
+          if (active) setPasswordFlow('setup');
         }
-        setIsAdmin(false);
-        setPasswordFlow('none');
+        
+        if (active) setCheckingAuth(false);
+      } else {
+        if (active) setIsAdmin(false);
+        if (active) setIsOwner(false);
       }
-      setCheckingAuth(false);
     };
-    checkAdmin();
-  }, [user, authLoading]);
+    if (user && role === 'admin') {
+      checkAdminData();
+    } else if (!user || role !== 'admin') {
+      setIsAdmin(false);
+      setIsOwner(false);
+    }
+    return () => { active = false; };
+  }, [user, role]);
 
   useEffect(() => {
     if (!isAdmin || passwordFlow !== 'none') return;
@@ -214,6 +203,11 @@ export default function AdminPanel() {
         setSubscribers(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
         setStats(prev => ({ ...prev, totalSubscribers: snapshot.size }));
       }, (error) => { if (error.code !== 'unavailable' && !error.message?.includes('offline')) console.error(error); });
+      
+      const qInquiries = query(collection(db, 'inquiries'));
+      unsubInquiries = onSnapshot(qInquiries, (snapshot) => {
+        setStats(prev => ({ ...prev, totalInquiries: snapshot.size }));
+      }, (error) => { if (error.code !== 'unavailable' && !error.message?.includes('offline')) console.error(error); });
     }
     
     return () => {
@@ -259,36 +253,31 @@ export default function AdminPanel() {
 
   const handlePasswordSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!adminPasswordInput.trim()) return;
-    
     setPasswordError('');
+    if (!adminPasswordInput) return;
+    
     try {
-      const hashed = await hashPassword(adminPasswordInput);
+      const adminDocRef = doc(db, 'admins', user!.email!);
+      const adminDoc = await getDoc(adminDocRef);
+      
       if (passwordFlow === 'setup') {
-        const updateData: any = { password: hashed };
-        if (rememberMe) {
-           const token = generateToken();
-           updateData.trustedDevices = [token];
-           localStorage.setItem(`admin_trusted_${user!.email}`, token);
-        }
-        await updateDoc(doc(db, 'admins', user!.email!), updateData);
+        await setDoc(adminDocRef, {
+           email: user!.email!,
+           password: adminPasswordInput,
+           role: 'admin',
+           updatedAt: Date.now()
+        }, { merge: true });
         setPasswordFlow('none');
       } else if (passwordFlow === 'enter') {
-        if (adminDocData.password === hashed) {
-          if (rememberMe) {
-             const token = generateToken();
-             const trustedList = adminDocData.trustedDevices || [];
-             await updateDoc(doc(db, 'admins', user!.email!), { trustedDevices: [...trustedList, token] });
-             localStorage.setItem(`admin_trusted_${user!.email}`, token);
-          }
-          setPasswordFlow('none');
-        } else {
-          setPasswordError('Incorrect password');
-        }
+         if (adminDoc.exists() && adminDoc.data().password === adminPasswordInput) {
+            setPasswordFlow('none');
+         } else {
+            setPasswordError('Incorrect password.');
+         }
       }
-    } catch (e) {
-      console.error(e);
-      setPasswordError('An error occurred');
+    } catch (err) {
+      console.error(err);
+      setPasswordError('Error verifying password.');
     }
   };
 
@@ -361,31 +350,71 @@ export default function AdminPanel() {
   const handlePopupImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || e.target.files.length === 0) return;
     const file = e.target.files[0];
-    if (file.size > 2 * 1024 * 1024) {
-      alert("Image is too large (max 2MB)");
-      return;
+    
+    // File validation
+    if (!file.type.startsWith('image/')) {
+       setPopupUploadState('error');
+       setPopupUploadMessage('❌ Unsupported image format.');
+       return;
     }
+    
     try {
-      setIsUploadingPopup(true);
-      const fileRef = ref(storage, `popup/${Date.now()}_${file.name}`);
-      await uploadBytes(fileRef, file);
-      const url = await getDownloadURL(fileRef);
-      setLocalSiteConfig({ ...localSiteConfig, popupImage: url });
+      setPopupUploadState('processing');
+      setPopupUploadMessage('Optimizing image...');
+      
+      // Compress and convert to base64 directly (to avoid Firebase Storage)
+      const base64Url = await compressImage(file, 800, 800, 0.7);
+      
+      // Check size roughly (Firestore limit is 1MB, our base64 string should be < ~900KB)
+      // A base64 string length * 0.75 gives roughly the size in bytes
+      const sizeInBytes = base64Url.length * 0.75;
+      if (sizeInBytes > 900000) {
+          setPopupUploadState('error');
+          setPopupUploadMessage('❌ Image is too complex. Please try a simpler image.');
+          setTimeout(() => {
+            setPopupUploadState('idle');
+            setPopupUploadMessage('');
+          }, 5000);
+          return;
+      }
+      
+      setPopupUploadState('saving');
+      setPopupUploadMessage('Saving to database...');
+      
+      const newConfig = { ...localSiteConfig, popupImage: base64Url };
+      await setDoc(doc(db, 'settings', 'site_config'), newConfig, { merge: true });
+      setLocalSiteConfig(newConfig);
+      
+      setPopupUploadState('success');
+      setPopupUploadMessage('✅ Popup image uploaded successfully');
+      
+      setTimeout(() => {
+        setPopupUploadState('idle');
+        setPopupUploadMessage('');
+      }, 5000);
+      
     } catch (error: any) {
-      alert("Upload failed: " + error.message);
-    } finally {
-      setIsUploadingPopup(false);
+      console.error("Popup upload error:", error);
+      setPopupUploadState('error');
+      setPopupUploadMessage('❌ Upload failed: ' + (error.message || 'Please try again.'));
+      
+      setTimeout(() => {
+        setPopupUploadState('idle');
+        setPopupUploadMessage('');
+      }, 7000);
     }
   };
 
   const saveSiteConfig = async () => {
     setSavingSite(true);
     try {
-      await setDoc(doc(db, 'settings', 'site_config'), localSiteConfig);
-      alert("Site settings saved successfully!");
+      await setDoc(doc(db, 'settings', 'site_config'), localSiteConfig, { merge: true });
+      setSaveSuccessMessage("✅ Site settings saved successfully!");
+      setTimeout(() => setSaveSuccessMessage(''), 4000);
     } catch (e) {
       console.error(e);
-      alert("Error saving settings.");
+      setSaveSuccessMessage("❌ Error saving settings.");
+      setTimeout(() => setSaveSuccessMessage(''), 4000);
     }
     setSavingSite(false);
   };
@@ -401,8 +430,22 @@ export default function AdminPanel() {
   const updateReviewStatus = async (id: string, newStatus: string) => {
     try {
       await updateDoc(doc(db, 'reviews', id), { status: newStatus });
+      alert('Review status updated successfully!');
     } catch (e) {
       console.error(e);
+      alert('Failed to update review status.');
+    }
+  };
+  
+  const replyReview = async (id: string) => {
+    const reply = prompt("Enter your reply for this review:");
+    if (reply === null) return;
+    try {
+      await updateDoc(doc(db, 'reviews', id), { adminReply: reply.trim() });
+      alert('Reply added successfully!');
+    } catch (e) {
+      console.error(e);
+      alert('Failed to add reply');
     }
   };
 
@@ -445,9 +488,13 @@ export default function AdminPanel() {
       let imageUrl = newGalleryItem.img;
 
       if (galleryFile) {
-        const fileRef = ref(storage, `gallery/${Date.now()}_${galleryFile.name}`);
-        await uploadBytes(fileRef, galleryFile);
-        imageUrl = await getDownloadURL(fileRef);
+        imageUrl = await compressImage(galleryFile, 1200, 1200, 0.7);
+        const sizeInBytes = imageUrl.length * 0.75;
+        if (sizeInBytes > 900000) {
+            alert("Image is too large even after compression. Please use a smaller image to fit in database.");
+            setUploadingGallery(false);
+            return;
+        }
       }
 
       await setDoc(doc(collection(db, 'gallery')), {
@@ -485,6 +532,72 @@ export default function AdminPanel() {
     );
   }
 
+  if (user && role !== 'admin') {
+    return (
+      <div className="min-h-screen bg-[#030303] flex items-center justify-center text-white p-4">
+        <div className="bg-neutral-900 border border-white/10 p-8 rounded-3xl max-w-sm w-full text-center shadow-2xl">
+          <Shield className="w-16 h-16 text-red-500 mx-auto mb-4" />
+          <h1 className="text-2xl font-bold mb-2 text-white">Access Denied</h1>
+          <p className="text-sm text-neutral-400 mb-6">You do not have administrator privileges.</p>
+          <button 
+            onClick={logout}
+            className="w-full bg-red-500 text-white font-bold py-3 px-4 rounded-xl hover:bg-red-400 transition-colors"
+          >
+            Sign Out
+          </button>
+        </div>
+      </div>
+    );
+  }
+  
+  if (passwordFlow !== 'none') {
+    return (
+      <div className="min-h-screen bg-[#030303] flex items-center justify-center text-white p-4">
+        <div className="bg-neutral-900 border border-white/10 p-8 rounded-3xl max-w-sm w-full text-center shadow-2xl">
+          <Lock className="w-16 h-16 text-amber-500 mx-auto mb-4" />
+          <h1 className="text-2xl font-bold mb-2 text-white">
+            {passwordFlow === 'setup' ? 'Setup Admin Password' : 'Enter Admin Password'}
+          </h1>
+          <p className="text-sm text-neutral-400 mb-6">
+            {passwordFlow === 'setup' 
+              ? 'Create a secondary password for your admin account.' 
+              : 'Enter your secondary password to access the admin panel.'}
+          </p>
+          <form onSubmit={handlePasswordSubmit} className="space-y-4">
+            <input 
+              type="password" 
+              placeholder="Admin Password"
+              value={adminPasswordInput}
+              onChange={(e) => setAdminPasswordInput(e.target.value)}
+              className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-white placeholder:text-neutral-500 focus:outline-none focus:border-amber-500"
+              required
+            />
+            {passwordError && (
+              <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-xs font-medium">
+                {passwordError}
+              </div>
+            )}
+            <button 
+              type="submit"
+              className="w-full bg-amber-500 text-black font-bold py-3 px-4 rounded-xl hover:bg-amber-400 transition-colors"
+            >
+              {passwordFlow === 'setup' ? 'Set Password' : 'Verify Password'}
+            </button>
+            {passwordFlow === 'enter' && (
+              <button 
+                type="button"
+                onClick={handleForgotPassword}
+                className="text-xs text-neutral-500 hover:text-white mt-4 block mx-auto"
+              >
+                Forgot password?
+              </button>
+            )}
+          </form>
+        </div>
+      </div>
+    );
+  }
+
   if (!user) {
     return (
       <div className="min-h-screen bg-[#030303] flex items-center justify-center text-white p-4">
@@ -503,61 +616,6 @@ export default function AdminPanel() {
           >
             Sign in with Google
           </button>
-        </div>
-      </div>
-    );
-  }
-
-  if (passwordFlow !== 'none') {
-    return (
-      <div className="min-h-screen bg-[#030303] flex items-center justify-center text-white p-4">
-        <div className="bg-neutral-900 border border-amber-500/30 p-8 rounded-3xl max-w-sm w-full text-center shadow-2xl">
-          <Lock className="w-16 h-16 text-amber-500 mx-auto mb-4" />
-          <h1 className="text-2xl font-bold mb-2 text-white">
-            {passwordFlow === 'setup' ? 'Set Admin Password' : 'Admin Password'}
-          </h1>
-          <p className="text-sm text-neutral-400 mb-6">
-            {passwordFlow === 'setup' ? 'Create a secure password to protect your admin workspace.' : 'Enter your admin password to proceed.'}
-          </p>
-          <form onSubmit={handlePasswordSubmit} className="space-y-4">
-            <div>
-              <input 
-                type="password"
-                placeholder={passwordFlow === 'setup' ? "New Password" : "Password"}
-                value={adminPasswordInput}
-                onChange={(e) => setAdminPasswordInput(e.target.value)}
-                className="w-full bg-black/50 border border-white/10 px-4 py-3 rounded-xl text-white outline-none focus:border-amber-500 transition-colors"
-                required
-              />
-            </div>
-            {passwordError && <p className="text-red-400 text-xs text-left">{passwordError}</p>}
-            <div className="flex items-center gap-2 text-left">
-              <input 
-                type="checkbox" 
-                id="remember" 
-                checked={rememberMe}
-                onChange={(e) => setRememberMe(e.target.checked)}
-                className="accent-amber-500 cursor-pointer"
-              />
-              <label htmlFor="remember" className="text-xs text-neutral-400 cursor-pointer select-none">
-                Remember this device
-              </label>
-            </div>
-            <button 
-              type="submit"
-              className="w-full bg-amber-500 text-black font-bold py-3 px-4 rounded-xl hover:bg-amber-400 transition-colors"
-            >
-              {passwordFlow === 'setup' ? 'Save Password' : 'Enter'}
-            </button>
-          </form>
-          {passwordFlow === 'enter' && (
-            <button 
-              onClick={handleForgotPassword}
-              className="mt-6 text-xs text-neutral-500 hover:text-white transition-colors"
-            >
-              Forgot password? Reset via Google
-            </button>
-          )}
         </div>
       </div>
     );
@@ -584,7 +642,7 @@ export default function AdminPanel() {
             <div className="flex items-center gap-4">
               <span className="text-sm font-medium text-neutral-400 hidden sm:block">{user.email}</span>
               <button 
-                onClick={logout}
+                onClick={() => setShowSignOutConfirm(true)}
                 className="flex items-center gap-2 text-neutral-400 hover:text-white transition-colors text-sm font-bold bg-white/5 px-4 py-2 rounded-full border border-white/10"
               >
                 <LogOut size={16} /> Sign Out
@@ -862,7 +920,7 @@ export default function AdminPanel() {
                               <td className="p-5 align-top">
                                 <div className="flex flex-wrap gap-2">
                                   <select 
-                                    value={r.status || 'pending'}
+                                    value={r.status?.toLowerCase() === 'approved' ? 'approved' : r.status?.toLowerCase() === 'rejected' ? 'rejected' : 'pending'}
                                     onChange={(e) => updateReviewStatus(r.id, e.target.value)}
                                     className="bg-black/50 border border-white/10 text-xs rounded-lg py-1 px-2 outline-none focus:border-amber-500"
                                   >
@@ -873,7 +931,10 @@ export default function AdminPanel() {
                                 </div>
                               </td>
                               <td className="p-5 align-top text-right">
-                                <button onClick={() => deleteReview(r.id)} className="text-red-400 hover:text-red-300">
+                                <button onClick={() => replyReview(r.id)} className="text-amber-500 hover:text-amber-400 mr-3" title="Reply to review">
+                                  Reply
+                                </button>
+                                <button onClick={() => deleteReview(r.id)} className="text-red-400 hover:text-red-300" title="Delete review">
                                   <Trash2 size={16} />
                                 </button>
                               </td>
@@ -979,10 +1040,12 @@ export default function AdminPanel() {
                       </div>
                     ) : (
                       <div className="w-full h-48 bg-black border border-white/10 rounded-xl px-4 py-3 text-sm text-neutral-500 relative flex items-center justify-center hover:border-amber-500/50 transition-colors border-dashed">
-                        <input type="file" accept="image/*" onChange={handlePopupImageUpload} disabled={isUploadingPopup} className="absolute inset-0 opacity-0 cursor-pointer" />
+                        <input type="file" accept="image/*" onChange={handlePopupImageUpload} disabled={popupUploadState !== 'idle' && popupUploadState !== 'error' && popupUploadState !== 'success'} className="absolute inset-0 opacity-0 cursor-pointer" />
                         <div className="flex flex-col items-center gap-2 pointer-events-none">
-                          <ImageIcon size={24} className="text-neutral-600" />
-                          <span>{isUploadingPopup ? "Uploading..." : "Upload from Gallery"}</span>
+                          <ImageIcon size={24} className={popupUploadState === 'error' ? "text-red-500" : popupUploadState === 'success' ? "text-green-500" : "text-neutral-600"} />
+                          <span className={popupUploadState === 'error' ? "text-red-500" : popupUploadState === 'success' ? "text-green-500" : "text-amber-500"}>
+                             {popupUploadState !== 'idle' ? popupUploadMessage : "Upload from Gallery"}
+                          </span>
                         </div>
                       </div>
                     )}
@@ -1000,7 +1063,9 @@ export default function AdminPanel() {
               </div>
             </div>
 
-            {showPopupPreview && (
+            
+                          
+            {showPopupPreview && typeof document !== 'undefined' && createPortal(
               <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
                 <div className="relative max-w-md md:max-w-xl w-full flex flex-col items-center justify-center rounded-3xl overflow-hidden shadow-2xl">
                   <button onClick={() => setShowPopupPreview(false)} className="absolute top-4 right-4 z-10 p-2 bg-black/50 hover:bg-black/80 text-white rounded-full transition-colors backdrop-blur-md">
@@ -1012,81 +1077,122 @@ export default function AdminPanel() {
                     <div className="w-full h-64 bg-neutral-900 flex items-center justify-center text-neutral-500">No image uploaded</div>
                   )}
                 </div>
-              </div>
+              </div>,
+              document.body
             )}
           </motion.div>
         )}
 
         {/* ADMINS TAB */}
         {activeTab === 'admins' && (
-          <motion.div initial={{opacity:0, y: 10}} animate={{opacity:1, y:0}} className="space-y-6">
-            <h2 className="text-2xl font-bold">Manage Admins</h2>
-            <div className="bg-neutral-900 p-6 rounded-3xl border border-white/10">
-              <form onSubmit={addAdmin} className="flex gap-4">
-                <input 
-                  type="email" 
-                  placeholder="New Admin Email" 
-                  value={newAdminEmail} 
-                  onChange={e => setNewAdminEmail(e.target.value)}
-                  className="flex-1 bg-black/50 border border-white/10 px-4 py-3 rounded-xl text-white outline-none" 
-                  required 
-                />
-                <button type="submit" className="bg-amber-500 text-black font-bold py-3 px-6 rounded-xl hover:bg-amber-400 transition-colors whitespace-nowrap">
-                  Add Admin
-                </button>
-              </form>
-            </div>
-            <div className="bg-neutral-900 rounded-3xl border border-white/10 overflow-hidden">
-              <table className="w-full text-left border-collapse">
-                <tbody className="divide-y divide-white/5">
-                  {adminsList.map(a => (
-                    <tr key={a.id}>
-                      <td className="p-5 text-white">{a.email}</td>
-                      <td className="p-5 text-right">
-                        {!MASTER_ADMINS.includes(a.email) && (
-                          <button onClick={() => removeAdmin(a.id)} className="text-red-400 hover:text-red-300"><Trash2 size={16} /></button>
-                        )}
-                      </td>
-                    </tr>
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="max-w-4xl mx-auto space-y-6">
+            <div className="bg-neutral-900 border border-white/10 rounded-2xl p-6 shadow-xl">
+              <h2 className="text-xl font-bold mb-6 flex items-center gap-2"><Users className="text-amber-500" /> Authorized Personnel</h2>
+              {loadingAdmins ? (
+                <div className="flex justify-center p-8"><Loader2 className="animate-spin text-amber-500 w-8 h-8" /></div>
+              ) : (
+                <div className="space-y-4">
+                  {adminsList.map((a: any) => (
+                    <div key={a.id} className="flex flex-col sm:flex-row sm:items-center justify-between p-4 bg-black rounded-xl border border-white/5 gap-4">
+                      <div className="flex items-center gap-4">
+                        <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center border border-amber-500/30 text-amber-500">
+                           <Shield size={18} />
+                        </div>
+                        <div>
+                          <p className="font-bold text-white">{a.email}</p>
+                          <p className="text-xs text-neutral-400 capitalize">{a.role} Access</p>
+                        </div>
+                      </div>
+                      
+                      {isOwner && a.email !== user?.email && (
+                        <div className="flex gap-2">
+                          <select 
+                            value={a.role}
+                            onChange={(e) => updateAdminRole(a.id, e.target.value)}
+                            className="bg-neutral-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:border-amber-500 outline-none"
+                          >
+                            <option value="admin">Admin</option>
+                            <option value="viewer">Viewer</option>
+                          </select>
+                        </div>
+                      )}
+                    </div>
                   ))}
-                </tbody>
-              </table>
+                </div>
+              )}
             </div>
           </motion.div>
         )}
-
       </div>
 
-      {/* Edit Order Modal */}
+      {/* GLOBAL ORDER DETAIL MODAL */}
       <AnimatePresence>
-        {selectedOrder && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-            <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setSelectedOrder(null)}></div>
-            <motion.div initial={{opacity:0, scale:0.95}} animate={{opacity:1, scale:1}} exit={{opacity:0, scale:0.95}} className="relative bg-[#0a0a0a] border border-white/10 rounded-3xl w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl">
-              <div className="flex items-center justify-between p-6 border-b border-white/5">
-                <h3 className="text-xl font-bold flex items-center gap-2">Order Details</h3>
-                <button onClick={() => setSelectedOrder(null)} className="p-2 hover:bg-white/5 rounded-full transition-colors"><X size={20} /></button>
+        {selectedOrder && typeof document !== 'undefined' && createPortal(
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm overflow-y-auto">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }} 
+              animate={{ opacity: 1, scale: 1 }} 
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-neutral-900 border border-white/10 rounded-2xl max-w-2xl w-full my-8 shadow-2xl"
+            >
+              <div className="p-6 border-b border-white/5 flex justify-between items-center sticky top-0 bg-neutral-900/90 backdrop-blur-md rounded-t-2xl z-10">
+                <h3 className="text-xl font-bold flex items-center gap-2">
+                  Order Details
+                </h3>
+                <button onClick={() => { setSelectedOrder(null); setEditingId(null); }} className="p-2 hover:bg-white/10 rounded-full transition-colors">
+                  <X size={20} />
+                </button>
               </div>
-              <div className="p-6 overflow-y-auto space-y-6">
+              
+              <div className="p-6 space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <h4 className="text-sm font-bold text-neutral-400 mb-2 uppercase tracking-wider">Customer</h4>
+                    <div className="space-y-1">
+                      <p className="font-medium text-lg">{selectedOrder.name}</p>
+                      <p className="text-neutral-300">{selectedOrder.email}</p>
+                      <p className="text-neutral-300">{selectedOrder.phone}</p>
+                    </div>
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-neutral-400 mb-2 uppercase tracking-wider">Order Info</h4>
+                    <div className="space-y-1">
+                      <p className="font-mono text-amber-500 text-sm">ID: {selectedOrder.orderId || selectedOrder.id}</p>
+                      <p className="text-neutral-300">Date: {new Date(selectedOrder.createdAt).toLocaleString()}</p>
+                      <p className="text-neutral-300 font-medium">Amount: ₹{selectedOrder.amount}</p>
+                    </div>
+                  </div>
+                </div>
+
                 <div>
-                  <h4 className="text-sm font-bold text-amber-500 mb-2 uppercase tracking-widest">Customer Information</h4>
-                  <div className="grid grid-cols-2 gap-4 bg-neutral-900/50 p-4 rounded-2xl border border-white/5">
-                    <div><span className="text-neutral-500 text-xs block mb-1">Name</span><div className="text-sm font-medium">{selectedOrder.name}</div></div>
-                    <div><span className="text-neutral-500 text-xs block mb-1">Email</span><div className="text-sm font-medium break-all">{selectedOrder.email}</div></div>
-                    <div><span className="text-neutral-500 text-xs block mb-1">Phone</span><div className="text-sm font-medium">{selectedOrder.phone}</div></div>
-                    <div><span className="text-neutral-500 text-xs block mb-1">Order Date</span><div className="text-sm font-medium">{new Date(selectedOrder.createdAt).toLocaleString()}</div></div>
+                  <h4 className="text-sm font-bold text-neutral-400 mb-2 uppercase tracking-wider">Artwork Details</h4>
+                  <div className="bg-black p-4 rounded-xl border border-white/5 grid grid-cols-2 gap-4 text-sm">
+                    <div><span className="text-neutral-500 block mb-1">Subject:</span> {selectedOrder.subject}</div>
+                    <div><span className="text-neutral-500 block mb-1">Size:</span> {selectedOrder.size}</div>
+                    <div><span className="text-neutral-500 block mb-1">Medium:</span> {selectedOrder.medium}</div>
+                    <div><span className="text-neutral-500 block mb-1">Framing:</span> {selectedOrder.framing}</div>
+                  </div>
+                </div>
+
+                <div>
+                  <h4 className="text-sm font-bold text-neutral-400 mb-2 uppercase tracking-wider">Shipping Address</h4>
+                  <div className="bg-black p-4 rounded-xl border border-white/5 text-sm text-neutral-300 leading-relaxed whitespace-pre-wrap">
+                    {selectedOrder.address}
                   </div>
                 </div>
 
                 {editingId === selectedOrder.id ? (
-                  <div className="space-y-4 bg-amber-500/5 p-6 rounded-2xl border border-amber-500/20">
-                    <h4 className="text-sm font-bold text-amber-500 mb-4 flex items-center gap-2"><Edit2 size={14} /> Edit Status</h4>
-                    <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-amber-500/5 border border-amber-500/20 p-4 rounded-xl space-y-4">
+                    <h4 className="font-bold text-amber-500 flex items-center gap-2">
+                      <Edit2 size={16} /> Edit Order Status
+                    </h4>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div>
-                        <label className="text-xs text-neutral-400 mb-1 block">Production Status</label>
+                        <label className="text-xs text-neutral-400 mb-1 block">Order Status</label>
                         <select 
                           value={editForm.status || 'Payment Submitted'} 
                           onChange={(e) => setEditForm({...editForm, status: e.target.value})}
+
                           className="w-full bg-black border border-white/10 rounded-xl px-4 py-3 text-sm focus:border-amber-500 outline-none"
                         >
                           <option value="Payment Submitted">Payment Submitted</option>
@@ -1162,7 +1268,17 @@ export default function AdminPanel() {
                       <button onClick={() => generateInvoice(selectedOrder, 'download')} className="flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-bold bg-amber-500 text-black hover:bg-amber-400">
                         <Download size={16} /> Generate Invoice
                       </button>
-                      <button onClick={() => generateInvoice(selectedOrder, 'email')} className="flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-bold bg-neutral-800 text-amber-500 border border-amber-500/30 hover:bg-neutral-700">
+                      <button onClick={async () => {
+                        try {
+                          setSaveSuccessMessage("Sending invoice...");
+                          await generateInvoice(selectedOrder, 'email');
+                          setSaveSuccessMessage("✅ Invoice sent successfully to " + selectedOrder.email);
+                          setTimeout(() => setSaveSuccessMessage(''), 5000);
+                        } catch (err: any) {
+                          setSaveSuccessMessage("❌ " + err.message);
+                          setTimeout(() => setSaveSuccessMessage(''), 5000);
+                        }
+                      }} className="flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-bold bg-neutral-800 text-amber-500 border border-amber-500/30 hover:bg-neutral-700">
                         <Mail size={16} /> Send Invoice
                       </button>
                     </div>
@@ -1173,9 +1289,48 @@ export default function AdminPanel() {
                 )}
               </div>
             </motion.div>
-          </div>
+          </div>,
+          document.body
         )}
       </AnimatePresence>
+                
+      <AnimatePresence>
+        {saveSuccessMessage && (
+          <motion.div
+            initial={{ opacity: 0, y: 50 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 50 }}
+            className="fixed bottom-6 right-6 z-[200] bg-neutral-900 border border-white/10 text-white px-6 py-4 rounded-xl shadow-2xl flex items-center gap-3"
+          >
+            {saveSuccessMessage}
+          </motion.div>
+        )}
+      </AnimatePresence>
+      
+      {showSignOutConfirm && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <div className="bg-neutral-900 border border-white/10 p-6 rounded-2xl max-w-sm w-full shadow-2xl text-center">
+            <LogOut className="w-12 h-12 text-amber-500 mx-auto mb-4" />
+            <h3 className="text-xl font-bold text-white mb-2">Sign Out</h3>
+            <p className="text-neutral-400 text-sm mb-6">Are you sure you want to sign out of the Admin Workspace?</p>
+            <div className="flex gap-3">
+              <button 
+                onClick={() => setShowSignOutConfirm(false)}
+                className="flex-1 bg-neutral-800 text-white font-bold py-3 px-4 rounded-xl hover:bg-neutral-700 transition-colors"
+              >
+                Cancel
+              </button>
+              <button 
+                onClick={() => { setShowSignOutConfirm(false); logout(); }}
+                className="flex-1 bg-red-500 text-white font-bold py-3 px-4 rounded-xl hover:bg-red-400 transition-colors"
+              >
+                Sign Out
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   );
 }
