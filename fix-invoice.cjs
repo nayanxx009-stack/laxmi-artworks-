@@ -1,7 +1,9 @@
-import { jsPDF } from 'jspdf';
-import autoTable from 'jspdf-autotable';
+const fs = require('fs');
 
-export const generateInvoice = async (order: any, type: 'download' | 'email' | 'base64' = 'download') => {
+const code = `import { jsPDF } from 'jspdf';
+import 'jspdf-autotable';
+
+export const generateInvoice = async (order: any, type: 'download' | 'email' = 'download') => {
   const doc = new jsPDF();
   
   // Premium Colors
@@ -112,17 +114,14 @@ export const generateInvoice = async (order: any, type: 'download' | 'email' | '
   // Create table data based on what's available
   const tableData = [
     [
-      `Custom Artwork - ${order.size || 'Standard'}
-Medium: ${order.medium || 'N/A'}
-Framing: ${order.framing || 'N/A'}
-Subject: ${order.subject || 'N/A'}`,
+      \`Custom Artwork - \${order.size || 'Standard'}\nMedium: \${order.medium || 'N/A'}\nFraming: \${order.framing || 'N/A'}\nSubject: \${order.subject || 'N/A'}\`,
       "1",
-      `${totalAmount.toLocaleString('en-IN')}`,
-      `${totalAmount.toLocaleString('en-IN')}`
+      \`\${totalAmount.toLocaleString('en-IN')}\`,
+      \`\${totalAmount.toLocaleString('en-IN')}\`
     ]
   ];
 
-  autoTable(doc, {
+  (doc as any).autoTable({
     startY: 120,
     head: [['Description', 'Qty', 'Unit Price (INR)', 'Total (INR)']],
     body: tableData,
@@ -156,7 +155,7 @@ Subject: ${order.subject || 'N/A'}`,
     }
   });
 
-  const finalY = (doc as any).lastAutoTable?.finalY || 150;
+  const finalY = (doc as any).lastAutoTable.finalY || 150;
   
   // --- PAYMENT SUMMARY ---
   const summaryX = 130;
@@ -168,7 +167,7 @@ Subject: ${order.subject || 'N/A'}`,
   doc.setFont("helvetica", "normal");
   
   doc.text("Subtotal", summaryX, currY);
-  doc.text(`₹${totalAmount.toLocaleString('en-IN')}`, valX, currY, { align: 'right' });
+  doc.text(\`₹\${totalAmount.toLocaleString('en-IN')}\`, valX, currY, { align: 'right' });
   
   currY += 7;
   doc.text("Discount", summaryX, currY);
@@ -178,7 +177,7 @@ Subject: ${order.subject || 'N/A'}`,
   doc.setFont("helvetica", "bold");
   doc.setTextColor(26, 26, 26);
   doc.text("TOTAL", summaryX, currY);
-  doc.text(`₹${totalAmount.toLocaleString('en-IN')}`, valX, currY, { align: 'right' });
+  doc.text(\`₹\${totalAmount.toLocaleString('en-IN')}\`, valX, currY, { align: 'right' });
 
   // Paid & Balance
   currY += 10;
@@ -193,14 +192,14 @@ Subject: ${order.subject || 'N/A'}`,
   if (paymentStatusStr === 'PAID') amountPaid = totalAmount;
   else if (paymentStatusStr === 'PARTIALLY PAID') amountPaid = totalAmount / 2;
   
-  doc.text(`₹${amountPaid.toLocaleString('en-IN')}`, valX, currY, { align: 'right' });
+  doc.text(\`₹\${amountPaid.toLocaleString('en-IN')}\`, valX, currY, { align: 'right' });
   
   currY += 7;
   const balance = totalAmount - amountPaid;
   doc.setFont("helvetica", "bold");
   doc.setTextColor(198, 156, 109); // gold
   doc.text("Balance Due", summaryX, currY);
-  doc.text(`₹${balance.toLocaleString('en-IN')}`, valX, currY, { align: 'right' });
+  doc.text(\`₹\${balance.toLocaleString('en-IN')}\`, valX, currY, { align: 'right' });
 
   // --- FOOTER ---
   const pageHeight = doc.internal.pageSize.height;
@@ -222,11 +221,11 @@ Subject: ${order.subject || 'N/A'}`,
   doc.text("www.laxmiartworks.com", 196, pageHeight - 17, { align: 'right' });
 
   if (type === 'download') {
-    doc.save(`Invoice_${invoiceNumber}.pdf`);
+    doc.save(\`Invoice_\${invoiceNumber}.pdf\`);
   } else if (type === 'email') {
     const pdfBase64 = doc.output('datauristring');
     try {
-      const res = await fetch('/api/send-invoice', {
+      const res = await fetch((import.meta.env.VITE_API_URL || '') + '/api/send-invoice', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: order.email, order, pdfBase64 })
@@ -238,7 +237,8 @@ Subject: ${order.subject || 'N/A'}`,
     } catch (e: any) {
       throw new Error(e.message || 'Error sending invoice');
     }
-  } else if (type === 'base64') {
-    return doc.output('datauristring');
   }
 };
+`;
+
+fs.writeFileSync('src/lib/generateInvoice.ts', code);

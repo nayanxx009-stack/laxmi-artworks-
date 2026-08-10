@@ -52,10 +52,11 @@ const compressImage = (file: File, maxWidth: number, maxHeight: number, quality:
           return;
         }
         ctx.drawImage(img, 0, 0, width, height);
-        // Force jpeg for compression
-        resolve(canvas.toDataURL('image/jpeg', quality));
+        // Prefer webp if supported, otherwise jpeg
+        const type = canvas.toDataURL('image/webp').indexOf('data:image/webp') === 0 ? 'image/webp' : 'image/jpeg';
+        resolve(canvas.toDataURL(type, quality));
       };
-      img.onerror = (error) => reject(error);
+      img.onerror = (error) => reject(new Error('Failed to load image. It may be corrupt or an unsupported format.'));
     };
     reader.onerror = (error) => reject(error);
   });
@@ -282,14 +283,14 @@ export default function AdminPanel() {
   };
 
   const handleForgotPassword = async () => {
-    // If they forget the password, we clear it and force them to re-authenticate with Google.
-    // They must own the Google account to sign back in.
     if (!window.confirm("This will sign you out and reset your password. You must sign in with Google again to set a new password. Continue?")) return;
     try {
       await updateDoc(doc(db, 'admins', user!.email!), { password: '' });
       await logout();
-    } catch (e) {
+      window.location.reload();
+    } catch (e: any) {
       console.error(e);
+      alert("Failed to reset password. " + e.message);
     }
   };
 
@@ -322,10 +323,11 @@ export default function AdminPanel() {
       
       await updateDoc(doc(db, 'orders', id), updateData);
       setEditingId(null);
+      setSelectedOrder({ ...selectedOrder, ...updateData });
       
       if (isNewShipment && editForm.email) {
          try {
-           await fetch((import.meta.env.VITE_API_URL || '') + '/api/notify-shipment', {
+           await fetch('/api/notify-shipment', {
              method: 'POST',
              headers: { 'Content-Type': 'application/json' },
              body: JSON.stringify({
@@ -351,10 +353,10 @@ export default function AdminPanel() {
     if (!e.target.files || e.target.files.length === 0) return;
     const file = e.target.files[0];
     
-    // File validation
-    if (!file.type.startsWith('image/')) {
+    if (file.size > 15 * 1024 * 1024) {
        setPopupUploadState('error');
-       setPopupUploadMessage('❌ Unsupported image format.');
+       setPopupUploadMessage('❌ File is too large. Please select a smaller image.');
+       setTimeout(() => { setPopupUploadState('idle'); setPopupUploadMessage(''); }, 5000);
        return;
     }
     
@@ -362,28 +364,37 @@ export default function AdminPanel() {
       setPopupUploadState('processing');
       setPopupUploadMessage('Optimizing image...');
       
-      // Compress and convert to base64 directly (to avoid Firebase Storage)
-      const base64Url = await compressImage(file, 800, 800, 0.7);
-      
-      // Check size roughly (Firestore limit is 1MB, our base64 string should be < ~900KB)
-      // A base64 string length * 0.75 gives roughly the size in bytes
-      const sizeInBytes = base64Url.length * 0.75;
-      if (sizeInBytes > 900000) {
-          setPopupUploadState('error');
-          setPopupUploadMessage('❌ Image is too complex. Please try a simpler image.');
-          setTimeout(() => {
-            setPopupUploadState('idle');
-            setPopupUploadMessage('');
-          }, 5000);
-          return;
-      }
-      
-      setPopupUploadState('saving');
-      setPopupUploadMessage('Saving to database...');
-      
-      const newConfig = { ...localSiteConfig, popupImage: base64Url };
-      await setDoc(doc(db, 'settings', 'site_config'), newConfig, { merge: true });
-      setLocalSiteConfig(newConfig);
+      const processUpload = async () => {
+        setPopupUploadState('processing');
+        setPopupUploadMessage('📷 Reading & Optimizing image...');
+        // Compress extremely aggressively for base64 storage to avoid any issues
+        const base64Url = await compressImage(file, 400, 400, 0.4);
+        
+        const sizeInBytes = base64Url.length * 0.75;
+        if (sizeInBytes > 1000000) {
+            throw new Error('Image is too complex. Please try a smaller image.');
+        }
+        
+        setPopupUploadState('saving');
+        setPopupUploadMessage('💾 Saving popup to database...');
+        
+        const newConfig = { ...localSiteConfig, popupImage: base64Url };
+        await setDoc(doc(db, 'settings', 'site_config'), newConfig, { merge: true });
+        
+        setPopupUploadMessage('🔍 Verifying saved popup...');
+        const docSnap = await getDoc(doc(db, 'settings', 'site_config'));
+        if (!docSnap.exists() || !docSnap.data().popupImage) {
+            throw new Error('Verification failed. Data was not saved properly.');
+        }
+        
+        setLocalSiteConfig(newConfig);
+      };
+
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Upload timed out. Please try again.')), 15000)
+      );
+
+      await Promise.race([processUpload(), timeoutPromise]);
       
       setPopupUploadState('success');
       setPopupUploadMessage('✅ Popup image uploaded successfully');
@@ -396,12 +407,14 @@ export default function AdminPanel() {
     } catch (error: any) {
       console.error("Popup upload error:", error);
       setPopupUploadState('error');
-      setPopupUploadMessage('❌ Upload failed: ' + (error.message || 'Please try again.'));
+      setPopupUploadMessage('❌ ' + (error.message || 'Upload failed.'));
       
       setTimeout(() => {
         setPopupUploadState('idle');
         setPopupUploadMessage('');
       }, 7000);
+    } finally {
+      if (e.target) e.target.value = '';
     }
   };
 
@@ -1126,9 +1139,10 @@ export default function AdminPanel() {
       </div>
 
       {/* GLOBAL ORDER DETAIL MODAL */}
-      <AnimatePresence>
-        {selectedOrder && typeof document !== 'undefined' && createPortal(
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm overflow-y-auto">
+      {typeof document !== 'undefined' && createPortal(
+        <AnimatePresence>
+          {selectedOrder && (
+            <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm overflow-y-auto">
             <motion.div 
               initial={{ opacity: 0, scale: 0.95 }} 
               animate={{ opacity: 1, scale: 1 }} 
@@ -1268,17 +1282,48 @@ export default function AdminPanel() {
                       <button onClick={() => generateInvoice(selectedOrder, 'download')} className="flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-bold bg-amber-500 text-black hover:bg-amber-400">
                         <Download size={16} /> Generate Invoice
                       </button>
-                      <button onClick={async () => {
+                      <button onClick={async (e) => {
+                        const btn = e.currentTarget;
+                        btn.disabled = true;
                         try {
-                          setSaveSuccessMessage("Sending invoice...");
-                          await generateInvoice(selectedOrder, 'email');
-                          setSaveSuccessMessage("✅ Invoice sent successfully to " + selectedOrder.email);
+                          if (!selectedOrder.email) {
+                             throw new Error("Customer email missing");
+                          }
+                          setSaveSuccessMessage("Preparing invoice...");
+                          await new Promise(r => setTimeout(r, 600));
+                          
+                          setSaveSuccessMessage("Generating PDF...");
+                          const pdfBase64 = await generateInvoice(selectedOrder, 'base64');
+                          await new Promise(r => setTimeout(r, 600));
+                          
+                          setSaveSuccessMessage(`Sending invoice to ${selectedOrder.email}...`);
+                          
+                          const controller = new AbortController();
+                          const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout
+                          
+                          const res = await fetch('/api/send-invoice', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ email: selectedOrder.email, order: selectedOrder, pdfBase64 }),
+                            signal: controller.signal
+                          });
+                          clearTimeout(timeoutId);
+                          
+                          const data = await res.json().catch(() => ({}));
+                          if (!res.ok || !data.success) {
+                            throw new Error(data.error || 'Failed to send invoice. Check email credentials.');
+                          }
+                          
+                          setSaveSuccessMessage("✅ Invoice sent successfully");
                           setTimeout(() => setSaveSuccessMessage(''), 5000);
                         } catch (err: any) {
-                          setSaveSuccessMessage("❌ " + err.message);
-                          setTimeout(() => setSaveSuccessMessage(''), 5000);
+                          const isAbort = err.name === 'AbortError' || err.message.includes('abort');
+                          setSaveSuccessMessage("❌ " + (isAbort ? "Connection timed out" : err.message));
+                          setTimeout(() => setSaveSuccessMessage(''), 7000);
+                        } finally {
+                          btn.disabled = false;
                         }
-                      }} className="flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-bold bg-neutral-800 text-amber-500 border border-amber-500/30 hover:bg-neutral-700">
+                      }} className="flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-bold bg-neutral-800 text-amber-500 border border-amber-500/30 hover:bg-neutral-700 disabled:opacity-50 disabled:cursor-not-allowed">
                         <Mail size={16} /> Send Invoice
                       </button>
                     </div>
@@ -1289,10 +1334,11 @@ export default function AdminPanel() {
                 )}
               </div>
             </motion.div>
-          </div>,
-          document.body
-        )}
-      </AnimatePresence>
+          </div>
+          )}
+        </AnimatePresence>,
+        document.body
+      )}
                 
       <AnimatePresence>
         {saveSuccessMessage && (

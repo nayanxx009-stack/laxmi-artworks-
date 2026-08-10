@@ -210,9 +210,19 @@ async function startServer() {
   const app = express();
   const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
   app.use(cors());
-  app.use(express.json());
+  app.use(express.json({ limit: "50mb" }));
+  app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
   // API Routes
+  
+  app.get("/api/debug-env", (req, res) => {
+    res.json({
+      hasUser: !!process.env.GMAIL_USER,
+      hasPass: !!process.env.GMAIL_APP_PASSWORD,
+      userVal: process.env.GMAIL_USER ? process.env.GMAIL_USER.substring(0, 3) + '...' : 'none'
+    });
+  });
+
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok" });
   });
@@ -308,40 +318,98 @@ async function startServer() {
   
   app.post("/api/send-invoice", async (req, res) => {
     const { email, order, pdfBase64 } = req.body;
-    if (!process.env.IMAP_USER || !process.env.IMAP_PASS) {
-       return res.status(500).json({ success: false, error: 'Email credentials not configured' });
+    
+    if (!email) {
+       return res.status(400).json({ success: false, error: 'Customer email is missing.' });
     }
+    
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+       return res.status(400).json({ success: false, error: 'Invalid customer email format.' });
+    }
+    
+
+    
     try {
+      console.log(`[INVOICE] Request received for ${email}`);
+      console.log(`[EMAIL CONFIG]`);
+      console.log(`runtime: server`);
+      console.log(`GMAIL_USER: ${process.env.GMAIL_USER ? 'PRESENT' : 'MISSING'}`);
+      console.log(`GMAIL_APP_PASSWORD: ${process.env.GMAIL_APP_PASSWORD ? 'PRESENT' : 'MISSING'}`);
+      
+      const user = process.env.GMAIL_USER || process.env.IMAP_USER;
+      const pass = process.env.GMAIL_APP_PASSWORD || process.env.IMAP_PASS;
+      
+      if (!user || !pass) {
+          throw new Error('Email server credentials not configured (GMAIL_USER or GMAIL_APP_PASSWORD missing).');
+      }
+      
+      console.log(`[INVOICE] Customer email validated`);
+      console.log(`[INVOICE] Preparing email`);
+      
       const transporter = nodemailer.createTransport({
         service: 'gmail',
         auth: {
-          user: process.env.IMAP_USER,
-          pass: process.env.IMAP_PASS
-        }
+          user: user,
+          pass: pass
+        },
+        connectionTimeout: 15000,
+        greetingTimeout: 10000,
+        socketTimeout: 15000
       });
+      
+      console.log(`[INVOICE] Connecting to email service...`);
+      
+      // Verify transporter before sending
+      await transporter.verify().catch(err => {
+        console.error(`[INVOICE] FAILED verification: `, err.message);
+        throw new Error('Email service authentication or connection failed. Check credentials.');
+      });
+      
+      const invoiceNumber = order.orderId || order.id?.substring(0, 8).toUpperCase();
+      const amount = order.amount || '0';
+      const status = order.paymentStatus || 'Pending';
+      
       const mailOptions = {
-        from: process.env.IMAP_USER,
+        from: user,
         to: email,
-        subject: `Invoice for Order ${order.id}`,
-        text: `Dear ${order.name},
+        subject: `Laxmi Artworks — Invoice ${invoiceNumber} for Order ${order.orderId || order.id}`,
+        text: `Hello ${order.name || 'Customer'},
 
-Please find attached the invoice for your order ${order.id}.
+Thank you for choosing Laxmi Artworks.
 
-Thank you,
-Laxmi Artworks`,
+Please find your invoice attached for Order ${order.orderId || order.id}.
+
+Invoice: ${invoiceNumber}
+Amount: ₹${amount}
+Payment Status: ${status}
+
+For any questions, please contact:
+support@laxmiartworks.com
+
+Regards,
+Laxmi Artworks
+NECRONIC IND. PVT. LTD.
+Tinsukia, Assam`,
         attachments: [
           {
-            filename: `Invoice_${order.id}.pdf`,
+            filename: `Invoice_${order.orderId || order.id}.pdf`,
             content: pdfBase64.split("base64,")[1],
             encoding: 'base64'
           }
         ]
       };
-      await transporter.sendMail(mailOptions);
+      
+      console.log(`[INVOICE] Sending email to ${email}...`);
+      const info = await transporter.sendMail(mailOptions);
+      console.log(`[INVOICE] Email provider responded: ${info.messageId}`);
+      console.log(`[INVOICE] Completed`);
+      
       res.json({ success: true });
     } catch (err: any) {
-      console.error(err);
-      res.status(500).json({ success: false, error: err.message });
+      console.error('[INVOICE] FAILED:', err.message);
+      res.status(500).json({ success: false, error: err.message || 'SMTP Connection failed or rejected.' });
     }
   });
 
@@ -365,7 +433,13 @@ Laxmi Artworks`,
          from: process.env.GMAIL_USER,
          to: email,
          subject: `Shipment Update for Order ${orderId}`,
-         text: `Your order ${orderId} shipment status has been updated to: ${status}.\n\nCourier: ${courierPartner}\nTracking ID: ${trackingId}\nEstimated Delivery: ${estimatedDelivery || 'N/A'}\n\nYou can track your order using the provided tracking ID.`
+         text: `Your order ${orderId} shipment status has been updated to: ${status}.
+
+Courier: ${courierPartner}
+Tracking ID: ${trackingId}
+Estimated Delivery: ${estimatedDelivery || 'N/A'}
+
+You can track your order using the provided tracking ID.`
        };
 
        await transporter.sendMail(mailOptions);

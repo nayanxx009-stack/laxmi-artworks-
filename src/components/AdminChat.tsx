@@ -125,7 +125,7 @@ export default function AdminChat() {
       let sentStats = { success: 0, failure: 0 };
       if (tokens.length > 0) {
         try {
-          const res = await fetch((import.meta.env.VITE_API_URL || '') + '/api/broadcast-push', {
+          const res = await fetch('/api/broadcast-push', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ tokens, title: 'Message from Laxmi Artworks', body: broadcastMessage, url: '/?chat=open' })

@@ -9,7 +9,7 @@ export const sendPushToUser = async (userId: string, title: string, body: string
       const tokens = data.tokens || (data.token ? [data.token] : []);
       
       if (tokens.length > 0) {
-        await fetch((import.meta.env.VITE_API_URL || '') + '/api/broadcast-push', {
+        await fetch('/api/broadcast-push', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ tokens, title, body, url })
@@ -37,7 +37,7 @@ export const sendPushToAdmins = async (title: string, body: string, url: string 
     });
 
     if (tokens.length > 0) {
-      await fetch((import.meta.env.VITE_API_URL || '') + '/api/broadcast-push', {
+      await fetch('/api/broadcast-push', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tokens, title, body, url })
