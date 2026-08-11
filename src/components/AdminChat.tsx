@@ -57,7 +57,7 @@ export default function AdminChat() {
         sender: 'admin',
         timestamp: Date.now()
       });
-      sendPushToUser(activeChat.id, 'New Message from Laxmi Artworks', msg, '/?chat=open');
+      sendPushToUser(activeChat.id, 'New Message from Laxmi Artworks', msg, '/?chat=open', db);
       await updateDoc(doc(db, 'chats', activeChat.id), {
         adminTyping: false,
         lastMessage: msg,
@@ -160,7 +160,7 @@ export default function AdminChat() {
         sender: 'admin',
         timestamp: Date.now()
       });
-      sendPushToUser(activeChat.id, 'Invoice Received', 'You have received a new invoice from Laxmi Artworks', '/?chat=open');
+      sendPushToUser(activeChat.id, 'Invoice Received', 'You have received a new invoice from Laxmi Artworks', '/?chat=open', db);
       await updateDoc(doc(db, 'chats', activeChat.id), {
         adminTyping: false,
         lastMessage: 'Sent an invoice',

@@ -19,7 +19,7 @@ interface Review {
 }
 
 export default function Testimonials() {
-  const { user, loginWithGoogle } = useAuth();
+  const { user } = useAuth();
   const [reviews, setReviews] = useState<Review[]>([]);
   const [loading, setLoading] = useState(true);
   const [showReviewForm, setShowReviewForm] = useState(false);

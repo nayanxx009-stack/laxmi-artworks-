@@ -40,7 +40,7 @@ export default function SignupPage() {
       await loginWithGoogle(true);
       navigate('/');
     } catch (err: any) {
-      if (err.code === 'auth/popup-closed-by-user' || err.message?.includes('cross-origin')) {
+      if (err.code === 'auth/popup-closed-by-user' || err.code === 'auth/cancelled-popup-request' || err.message?.includes('cross-origin')) {
         setError("Sign-in popup was closed. Please try again, or open the app in a new tab if you're in a preview.");
       } else {
         setError(err.message || 'Google sign-in failed.');

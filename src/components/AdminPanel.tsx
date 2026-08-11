@@ -73,7 +73,11 @@ async function hashPassword(password: string) {
 
 
 export default function AdminPanel() {
-  const { user, role, logout, loginWithGoogle } = useAuth();
+  const { user, role, logout: realLogout, loginWithGoogle } = useAuth();
+  const logout = () => {
+    // Just redirect to lock the admin panel without signing out of Firebase
+    window.location.href = '/';
+  };
   
   const [isAdmin, setIsAdmin] = useState(false);
   const [isOwner, setIsOwner] = useState(false);
@@ -286,8 +290,7 @@ export default function AdminPanel() {
     if (!window.confirm("This will sign you out and reset your password. You must sign in with Google again to set a new password. Continue?")) return;
     try {
       await updateDoc(doc(db, 'admins', user!.email!), { password: '' });
-      await logout();
-      window.location.reload();
+      window.location.href = '/';
     } catch (e: any) {
       console.error(e);
       alert("Failed to reset password. " + e.message);
@@ -624,7 +627,7 @@ export default function AdminPanel() {
             </div>
           )}
           <button 
-            onClick={() => { setLoginError(''); loginWithGoogle(); }}
+            onClick={async () => { setLoginError(''); try { await loginWithGoogle(true); } catch (e: any) { if (e.code === 'auth/popup-closed-by-user' || e.code === 'auth/cancelled-popup-request') { setLoginError('Sign-in popup was closed.'); } else { setLoginError(e.message || 'Google sign-in failed'); } } }}
             className="w-full bg-white text-black font-bold py-3 px-4 rounded-xl hover:bg-neutral-200 transition-colors"
           >
             Sign in with Google

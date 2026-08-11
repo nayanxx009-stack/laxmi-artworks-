@@ -158,8 +158,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setAccessToken(null);
       setRole(null);
       setUser(null);
-      localStorage.clear();
-      sessionStorage.clear();
+      // Remove only user-specific items, do not clear all storage
+      Object.keys(localStorage).forEach(key => {
+        if (key.includes('firebase:authUser:') && !key.includes('adminApp')) {
+           localStorage.removeItem(key);
+        }
+      });
+      Object.keys(sessionStorage).forEach(key => {
+        if (key.includes('firebase:authUser:') && !key.includes('adminApp')) {
+           sessionStorage.removeItem(key);
+        }
+      });
       window.location.href = '/';
     } catch (error) {
       console.error("Logout failed:", error);

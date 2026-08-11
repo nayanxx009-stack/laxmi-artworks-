@@ -21,6 +21,10 @@ const app = initializeApp(firebaseConfig);
 
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
+const adminApp = initializeApp(firebaseConfig, 'adminApp');
+export const adminAuth = getAuth(adminApp);
+export const adminDb = getFirestore(adminApp, firebaseConfig.firestoreDatabaseId);
+export const adminStorage = getStorage(adminApp);
 export const storage = getStorage(app);
 export const messaging = typeof window !== 'undefined' && 'serviceWorker' in navigator ? getMessaging(app) : null;
 
