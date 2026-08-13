@@ -1,14 +1,16 @@
 importScripts('https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js');
 importScripts('https://www.gstatic.com/firebasejs/10.8.0/firebase-messaging-compat.js');
 
-firebase.initializeApp({
-  apiKey: "AIzaSyCY2OXKl8QB-4-YqHNiLWRVcLXwn-xP-mY",
-  authDomain: "laxmi-artworks.firebaseapp.com",
-  projectId: "laxmi-artworks",
-  storageBucket: "laxmi-artworks.firebasestorage.app",
-  messagingSenderId: "598865578283",
-  appId: "1:598865578283:web:edb8d8eb2eef1c9129dd6e"
-});
+if (!firebase.apps || !firebase.apps.length) {
+  firebase.initializeApp({
+    apiKey: "AIzaSyCY2OXKl8QB-4-YqHNiLWRVcLXwn-xP-mY",
+    authDomain: "laxmi-artworks.firebaseapp.com",
+    projectId: "laxmi-artworks",
+    storageBucket: "laxmi-artworks.firebasestorage.app",
+    messagingSenderId: "598865578283",
+    appId: "1:598865578283:web:edb8d8eb2eef1c9129dd6e"
+  });
+}
 
 const messaging = firebase.messaging();
 

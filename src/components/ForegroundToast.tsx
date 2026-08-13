@@ -13,7 +13,11 @@ export default function ForegroundToast() {
   const [toast, setToast] = useState<ToastData | null>(null);
 
   useEffect(() => {
-    const unsubscribe = onForegroundMessage((payload: any) => {
+    let cleanup: any = null;
+    let isMounted = true;
+
+    onForegroundMessage((payload: any) => {
+      if (!isMounted) return;
       console.log('[ForegroundToast] Received foreground message:', payload);
       const title = payload.notification?.title || payload.data?.title || 'Laxmi Artworks';
       const body = payload.notification?.body || payload.data?.body || 'You have a new update.';
@@ -25,10 +29,17 @@ export default function ForegroundToast() {
       // Auto dismiss after 8 seconds
       const timer = setTimeout(() => setToast(null), 8000);
       return () => clearTimeout(timer);
+    }).then(unsub => {
+      cleanup = unsub;
+    }).catch(err => {
+      console.warn('[ForegroundToast] Listener notice:', err);
     });
 
     return () => {
-      if (unsubscribe && typeof unsubscribe === 'function') unsubscribe();
+      isMounted = false;
+      if (typeof cleanup === 'function') {
+        cleanup();
+      }
     };
   }, []);
 

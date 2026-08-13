@@ -55,7 +55,8 @@ export default function LiveChat() {
       setIsOpen(true);
     }
     
-    const unsubFCM = onForegroundMessage((payload: any) => {
+    let unsubFCM: any = null;
+    onForegroundMessage((payload: any) => {
       // Do not show browser notification if chat is open
       if (!isOpenRef.current && Notification.permission === 'granted') {
          try {
@@ -68,21 +69,24 @@ export default function LiveChat() {
            console.error('Failed to show foreground notification:', e);
          }
       }
-    });
+    }).then(unsub => {
+      unsubFCM = unsub;
+    }).catch(() => {});
+
     return () => {
       window.removeEventListener('open-live-chat', handleOpen);
       if (navigator.serviceWorker) {
         navigator.serviceWorker.removeEventListener('message', handleMessage);
       }
-      if (unsubFCM && typeof unsubFCM === 'function') unsubFCM();
+      if (typeof unsubFCM === 'function') unsubFCM();
     };
   }, []);
 
   const handleRequestNotifications = async (silent = false) => {
     if (!chatId || typeof Notification === 'undefined') return;
     try {
-       const token = await requestFCMToken(chatId, user?.email || 'guest@example.com');
-       if (token) {
+       const result = await requestFCMToken(chatId, user?.email || 'guest@example.com');
+       if (result.success && result.token) {
          setNotificationStatus('granted');
          if (!silent) alert("Notifications enabled!");
        } else {

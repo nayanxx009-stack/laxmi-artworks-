@@ -10,7 +10,7 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
 import { initializeApp as initAdmin, cert, getApps } from 'firebase-admin/app';
 import { getMessaging } from 'firebase-admin/messaging';
-import { getFirestore, query, collection, where, getDocs, updateDoc, doc, setDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
+import { getFirestore, query, collection, where, getDocs, getDoc, updateDoc, doc, setDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
 
 
 // Initialize Firebase Admin
@@ -405,6 +405,133 @@ async function startServer() {
       console.error('[Order Watcher] Failed to start order watcher:', err.message);
     }
   }
+
+  // Register FCM Token via Server API
+  app.post("/api/register-fcm-token", async (req, res) => {
+    const { userId, email, token, platform, browser, userAgent } = req.body;
+    if (!token) {
+      return res.status(400).json({ error: 'Missing token' });
+    }
+    const targetUserId = userId || 'guest_' + Math.random().toString(36).substring(2, 9);
+    const targetEmail = (email || 'guest@laxmiartworks.local').toLowerCase();
+    const safeTokenId = token.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 100);
+    const now = Date.now();
+
+    try {
+      // 1. Save in users/{userId}/notificationTokens/{safeTokenId}
+      const userTokenDocRef = doc(db, 'users', targetUserId, 'notificationTokens', safeTokenId);
+      const existingDocSnap = await getDoc(userTokenDocRef);
+      const createdAt = existingDocSnap.exists() ? existingDocSnap.data().createdAt || now : now;
+
+      await setDoc(userTokenDocRef, {
+        token,
+        userId: targetUserId,
+        email: targetEmail,
+        createdAt,
+        updatedAt: now,
+        lastSeenAt: now,
+        platform: platform || 'Desktop',
+        browser: browser || 'Unknown',
+        userAgent: userAgent || '',
+        enabled: true
+      }, { merge: true });
+
+      // 2. Save in fcm_tokens/{userId}
+      const fcmDocRef = doc(db, 'fcm_tokens', targetUserId);
+      const docSnap = await getDoc(fcmDocRef);
+      let tokens = [token];
+      if (docSnap.exists()) {
+        const existingData = docSnap.data();
+        if (existingData.tokens && Array.isArray(existingData.tokens)) {
+          if (!existingData.tokens.includes(token)) {
+            tokens = [...existingData.tokens, token];
+          } else {
+            tokens = existingData.tokens;
+          }
+        } else if (existingData.token && existingData.token !== token) {
+          tokens = [existingData.token, token];
+        }
+      }
+      await setDoc(fcmDocRef, {
+        tokens,
+        token,
+        userId: targetUserId,
+        email: targetEmail,
+        updatedAt: now
+      }, { merge: true });
+
+      // 3. Auto-subscribe to all_users topic
+      if (getApps().length) {
+        try {
+          await getMessaging().subscribeToTopic([token], 'all_users');
+        } catch (subErr: any) {
+          console.warn('[Register FCM] Topic subscribe notice:', subErr.message);
+        }
+      }
+
+      console.log(`[Register FCM] Successfully registered token for user ${targetUserId}`);
+      res.json({ success: true, userId: targetUserId, tokenId: safeTokenId });
+    } catch (err: any) {
+      console.error('[Register FCM] Error:', err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Admin FCM Stats
+  app.get("/api/admin/fcm-stats", async (req, res) => {
+    try {
+      const tokenMap = new Map<string, any>();
+
+      // Read from fcm_tokens
+      try {
+        const fcmSnap = await getDocs(collection(db, 'fcm_tokens'));
+        fcmSnap.forEach(d => {
+          const data = d.data();
+          if (data.tokens && Array.isArray(data.tokens)) {
+            data.tokens.forEach((t: string) => {
+              if (t && !tokenMap.has(t)) {
+                tokenMap.set(t, { token: t, userId: data.userId || d.id, email: data.email || '' });
+              }
+            });
+          } else if (data.token && !tokenMap.has(data.token)) {
+            tokenMap.set(data.token, { token: data.token, userId: data.userId || d.id, email: data.email || '' });
+          }
+        });
+      } catch (e: any) {
+        console.warn('[Admin FCM Stats] fcm_tokens read notice:', e.message);
+      }
+
+      // Read from users/*/notificationTokens
+      try {
+        const usersSnap = await getDocs(collection(db, 'users'));
+        for (const uDoc of usersSnap.docs) {
+          try {
+            const subSnap = await getDocs(collection(db, 'users', uDoc.id, 'notificationTokens'));
+            subSnap.forEach(tDoc => {
+              const data = tDoc.data();
+              if (data.token && data.enabled !== false && !tokenMap.has(data.token)) {
+                tokenMap.set(data.token, {
+                  token: data.token,
+                  userId: data.userId || uDoc.id,
+                  email: data.email || '',
+                  platform: data.platform || 'Desktop',
+                  browser: data.browser || 'Unknown'
+                });
+              }
+            });
+          } catch (subErr) { /* ignore */ }
+        }
+      } catch (e: any) {
+        console.warn('[Admin FCM Stats] users subcollection read notice:', e.message);
+      }
+
+      const devices = Array.from(tokenMap.values());
+      res.json({ success: true, count: devices.length, devices });
+    } catch (err: any) {
+      console.error('[Admin FCM Stats] Error:', err.message);
+      res.status(500).json({ error: err.message, count: 0, devices: [] });
+    }
+  });
 
   // Subscribe Token(s) to FCM Topic
   app.post("/api/subscribe-topic", async (req, res) => {

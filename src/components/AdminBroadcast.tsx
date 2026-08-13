@@ -23,6 +23,21 @@ export default function AdminBroadcast() {
   const fetchTokenStats = async () => {
     setLoadingStats(true);
     try {
+      // 1. Try server-side admin stats first (accurate bypass of client permissions)
+      const res = await fetch('/api/admin/fcm-stats');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && typeof data.count === 'number') {
+          setTokenCount(data.count);
+          setLoadingStats(false);
+          return;
+        }
+      }
+    } catch (apiErr) {
+      console.warn('Server fcm-stats notice, falling back to client firestore:', apiErr);
+    }
+
+    try {
       const tokenSet = new Set<string>();
 
       // Fetch from fcm_tokens
@@ -71,12 +86,13 @@ export default function AdminBroadcast() {
     }
     setTestSending(true);
     try {
-      const myToken = await requestFCMToken(user?.uid || 'admin_test', user?.email || 'admin@laxmiartworks.com');
-      if (!myToken) {
-        alert('Could not obtain FCM token for test device. Please ensure notification permissions are allowed.');
+      const result = await requestFCMToken(user?.uid || 'admin_test', user?.email || 'admin@laxmiartworks.com');
+      if (!result.success || !result.token) {
+        alert(`Could not obtain FCM token for test device: ${result.error || 'Permission not granted'}`);
         setTestSending(false);
         return;
       }
+      const myToken = result.token;
       const res = await fetch('/api/send-push', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
