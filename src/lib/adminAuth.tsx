@@ -60,6 +60,9 @@ export const AdminAuthProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     try {
       const persistence = remember ? browserLocalPersistence : browserSessionPersistence;
       await setPersistence(adminAuth, persistence);
+      googleProvider.setCustomParameters({
+        prompt: 'select_account'
+      });
       await signInWithPopup(adminAuth, googleProvider);
     } catch (error: any) {
       console.error("Error logging in admin with Google", error);

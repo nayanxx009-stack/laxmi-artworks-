@@ -106,6 +106,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const persistence = remember ? browserLocalPersistence : browserSessionPersistence;
       await setPersistence(auth, persistence);
+      googleProvider.setCustomParameters({
+        prompt: 'select_account'
+      });
       await signInWithPopup(auth, googleProvider);
     } catch (error: any) {
       if (error.code !== 'auth/popup-closed-by-user' && error.code !== 'auth/cancelled-popup-request') {

@@ -53,3 +53,6 @@ export const messaging = typeof window !== 'undefined' && 'serviceWorker' in nav
 })() : null;
 
 export const googleProvider = new GoogleAuthProvider();
+googleProvider.setCustomParameters({
+  prompt: 'select_account'
+});
