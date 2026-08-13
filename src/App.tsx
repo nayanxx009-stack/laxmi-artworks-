@@ -14,6 +14,8 @@ import FloatingWidgets from "./components/FloatingWidgets";
 import LiveChat from "./components/LiveChat";
 import AdminPanel from "./components/AdminPanel";
 import GlobalPopup from "./components/GlobalPopup";
+import NotificationBanner from "./components/NotificationBanner";
+import ForegroundToast from "./components/ForegroundToast";
 import LoginPage from "./pages/LoginPage";
 import SignupPage from "./pages/SignupPage";
 import { Routes, Route } from "react-router-dom";
@@ -21,37 +23,41 @@ import { ProtectedRoute } from "./lib/auth";
 
 export default function App() {
   return (
-    <Routes>
-      <Route path="/login" element={<LoginPage />} />
-      <Route path="/auth" element={<LoginPage />} />
-      <Route path="/signup" element={<SignupPage />} />
-      <Route 
-        path="/secret-admin" 
-        element={
-          <AdminPanel />
-        } 
-      />
-      <Route path="/" element={
-        <div className="bg-[#030303] text-neutral-50 min-h-screen font-sans selection:bg-amber-500/30 overflow-x-hidden">
-          <GlobalPopup />
-          <FloatingWidgets />
-          <LiveChat />
-          <TopBanner />
-          <Navbar />
-          <main>
-            <Hero />
-            <About />
-            <Services />
-            <Process />
-            <Gallery />
-            <Testimonials />
-            <FAQ />
-            <Newsletter />
-            <Contact />
-          </main>
-          <Footer />
-        </div>
-      } />
-    </Routes>
+    <>
+      <NotificationBanner />
+      <ForegroundToast />
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/auth" element={<LoginPage />} />
+        <Route path="/signup" element={<SignupPage />} />
+        <Route 
+          path="/secret-admin" 
+          element={
+            <AdminPanel />
+          } 
+        />
+        <Route path="/" element={
+          <div className="bg-[#030303] text-neutral-50 min-h-screen font-sans selection:bg-amber-500/30 overflow-x-hidden">
+            <GlobalPopup />
+            <FloatingWidgets />
+            <LiveChat />
+            <TopBanner />
+            <Navbar />
+            <main>
+              <Hero />
+              <About />
+              <Services />
+              <Process />
+              <Gallery />
+              <Testimonials />
+              <FAQ />
+              <Newsletter />
+              <Contact />
+            </main>
+            <Footer />
+          </div>
+        } />
+      </Routes>
+    </>
   );
 }

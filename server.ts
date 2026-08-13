@@ -10,7 +10,7 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
 import { initializeApp as initAdmin, cert, getApps } from 'firebase-admin/app';
 import { getMessaging } from 'firebase-admin/messaging';
-import { getFirestore, query, collection, where, getDocs, updateDoc, doc, setDoc, deleteDoc } from 'firebase/firestore';
+import { getFirestore, query, collection, where, getDocs, updateDoc, doc, setDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
 
 
 // Initialize Firebase Admin
@@ -227,6 +227,205 @@ async function startServer() {
     res.json({ status: "ok" });
   });
 
+  // Helper to send push to user across multi-device tokens and legacy tokens
+  async function sendPushToUserServer(userId: string, email: string, title: string, body: string, url: string = '/') {
+    if (!getApps().length) return;
+    try {
+      const tokens = new Set<string>();
+
+      // 1. Check users/{userId}/notificationTokens
+      if (userId && userId !== 'guest') {
+        try {
+          const subCol = await getDocs(collection(db, 'users', userId, 'notificationTokens'));
+          subCol.forEach(d => {
+            const data = d.data();
+            if (data.token && data.enabled !== false) tokens.add(data.token);
+          });
+        } catch (e) { /* ignore */ }
+      }
+
+      // 2. Check fcm_tokens doc by userId
+      if (userId) {
+        try {
+          const fcmDoc = await getDocs(query(collection(db, 'fcm_tokens'), where('userId', '==', userId)));
+          fcmDoc.forEach(d => {
+            const data = d.data();
+            if (data.tokens && Array.isArray(data.tokens)) data.tokens.forEach((t: string) => tokens.add(t));
+            else if (data.token) tokens.add(data.token);
+          });
+        } catch (e) { /* ignore */ }
+      }
+
+      // 3. Check fcm_tokens doc by email
+      if (email) {
+        try {
+          const fcmDocEmail = await getDocs(query(collection(db, 'fcm_tokens'), where('email', '==', email.toLowerCase())));
+          fcmDocEmail.forEach(d => {
+            const data = d.data();
+            if (data.tokens && Array.isArray(data.tokens)) data.tokens.forEach((t: string) => tokens.add(t));
+            else if (data.token) tokens.add(data.token);
+          });
+        } catch (e) { /* ignore */ }
+      }
+
+      const tokenList = Array.from(tokens);
+      if (tokenList.length > 0) {
+        console.log(`[Push Watcher] Sending push notification to ${tokenList.length} token(s) for user ${userId || email}: "${title}"`);
+        const response = await getMessaging().sendEachForMulticast({
+          tokens: tokenList,
+          notification: { title, body },
+          data: { url: url || '/' }
+        });
+        console.log(`[Push Watcher] Success: ${response.successCount}, Failures: ${response.failureCount}`);
+      } else {
+        console.log(`[Push Watcher] No FCM tokens found for user ${userId || email}`);
+      }
+    } catch (err: any) {
+      console.error('[Push Watcher] Error sending push to user:', err.message);
+    }
+  }
+
+  // Real-time Order Watcher for automatic notifications
+  const knownOrderStatuses = new Map<string, { status: string; paymentStatus: string }>();
+  let isInitialOrderWatcherLoad = true;
+
+  function startOrderWatcher() {
+    try {
+      const ordersCol = collection(db, 'orders');
+      onSnapshot(ordersCol, (snapshot) => {
+        if (isInitialOrderWatcherLoad) {
+          snapshot.docs.forEach(d => {
+            const data = d.data();
+            knownOrderStatuses.set(d.id, {
+              status: data.status || '',
+              paymentStatus: data.paymentStatus || ''
+            });
+          });
+          isInitialOrderWatcherLoad = false;
+          console.log(`[Order Watcher] Initialized watcher with ${knownOrderStatuses.size} existing orders.`);
+          return;
+        }
+
+        snapshot.docChanges().forEach(async (change) => {
+          const orderId = change.doc.id;
+          const data = change.doc.data();
+          const prev = knownOrderStatuses.get(orderId);
+
+          if (change.type === 'added' && !prev) {
+            knownOrderStatuses.set(orderId, {
+              status: data.status || '',
+              paymentStatus: data.paymentStatus || ''
+            });
+            console.log(`[Order Watcher] New order created: #${orderId}`);
+            await sendPushToUserServer(
+              data.userId,
+              data.email,
+              'Order Placed 🎨',
+              `Your Laxmi Artworks order #${orderId} has been placed successfully.`,
+              `/?orderId=${orderId}`
+            );
+            if (data.paymentStatus === 'Paid' || data.paymentStatus === 'Verified') {
+              await sendPushToUserServer(
+                data.userId,
+                data.email,
+                'Payment Confirmed ✓',
+                `Payment for order #${orderId} has been confirmed.`,
+                `/?orderId=${orderId}`
+              );
+            }
+          } else if (change.type === 'modified') {
+            const newStatus = data.status || '';
+            const newPaymentStatus = data.paymentStatus || '';
+            const oldStatus = prev?.status || '';
+            const oldPaymentStatus = prev?.paymentStatus || '';
+
+            knownOrderStatuses.set(orderId, { status: newStatus, paymentStatus: newPaymentStatus });
+
+            // Status Transition
+            if (newStatus && newStatus !== oldStatus) {
+              console.log(`[Order Watcher] Status changed for #${orderId}: "${oldStatus}" -> "${newStatus}"`);
+              const statusUpper = newStatus.toUpperCase();
+              let title = '';
+              let body = '';
+
+              if (statusUpper.includes('DRAFT') || statusUpper.includes('SKETCH') || statusUpper.includes('PAINTING') || statusUpper.includes('PROCESSING')) {
+                title = 'Order Processing 🎨';
+                body = `Your artwork for order #${orderId} is now being prepared.`;
+              } else if (statusUpper.includes('REVIEW') || statusUpper.includes('PACKAGING') || statusUpper.includes('READY')) {
+                title = 'Your Artwork Is Ready ✨';
+                body = `Your artwork for order #${orderId} is ready!`;
+              } else if (statusUpper.includes('SHIPPED') || statusUpper.includes('TRANSIT') || statusUpper.includes('DISPATCHED')) {
+                title = 'Order Shipped 📦';
+                body = `Your order #${orderId} has been shipped.`;
+              } else if (statusUpper.includes('OUT FOR DELIVERY')) {
+                title = 'Out for Delivery 🚚';
+                body = `Your order #${orderId} is out for delivery!`;
+              } else if (statusUpper.includes('DELIVERED')) {
+                title = 'Order Delivered 🎉';
+                body = `Your order #${orderId} has been delivered. Thank you!`;
+              } else if (statusUpper.includes('CANCEL')) {
+                title = 'Order Cancelled ❌';
+                body = `Your order #${orderId} has been cancelled.`;
+              } else {
+                title = 'Order Status Updated 🎨';
+                body = `Your order #${orderId} status has been updated to: ${newStatus}`;
+              }
+
+              await sendPushToUserServer(data.userId, data.email, title, body, `/?orderId=${orderId}`);
+            }
+
+            // Payment Status Transition
+            if (newPaymentStatus && newPaymentStatus !== oldPaymentStatus) {
+              console.log(`[Order Watcher] Payment status changed for #${orderId}: "${oldPaymentStatus}" -> "${newPaymentStatus}"`);
+              const pUpper = newPaymentStatus.toUpperCase();
+              if (pUpper === 'PAID' || pUpper === 'VERIFIED') {
+                await sendPushToUserServer(
+                  data.userId,
+                  data.email,
+                  'Payment Confirmed ✓',
+                  `Payment for order #${orderId} has been confirmed.`,
+                  `/?orderId=${orderId}`
+                );
+              } else if (pUpper === 'FAILED') {
+                await sendPushToUserServer(
+                  data.userId,
+                  data.email,
+                  'Payment Failed ❌',
+                  `We couldn't confirm the payment for order #${orderId}. Please check payment details.`,
+                  `/?orderId=${orderId}`
+                );
+              }
+            }
+          }
+        });
+      }, (err) => {
+        console.error('[Order Watcher] Firestore error:', err);
+      });
+    } catch (err: any) {
+      console.error('[Order Watcher] Failed to start order watcher:', err.message);
+    }
+  }
+
+  // Subscribe Token(s) to FCM Topic
+  app.post("/api/subscribe-topic", async (req, res) => {
+    const { token, tokens, topic = 'all_users' } = req.body;
+    const tokenList = tokens || (token ? [token] : []);
+    if (!getApps().length) {
+      return res.status(500).json({ error: 'Firebase Admin not initialized' });
+    }
+    if (!tokenList.length) {
+      return res.status(400).json({ error: 'No tokens provided' });
+    }
+    try {
+      const response = await getMessaging().subscribeToTopic(tokenList, topic);
+      console.log(`[Topic API] Subscribed ${tokenList.length} token(s) to topic "${topic}"`);
+      res.json({ success: true, response });
+    } catch (err: any) {
+      console.error('[Topic API] Topic subscription error:', err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Send Push Notification via FCM
   app.post("/api/send-push", async (req, res) => {
     const { token, title, body, url, userId } = req.body;
@@ -256,7 +455,6 @@ async function startServer() {
           err.code === 'messaging/registration-token-not-registered') {
         console.log(`[Push API] Token is invalid or expired. Removing token: ${token}`);
         try {
-          // Find which document has this token and remove it
           const fcmTokensRef = collection(db, 'fcm_tokens');
           const snapshot = await getDocs(fcmTokensRef);
           snapshot.forEach(async (docSnap) => {
@@ -276,22 +474,33 @@ async function startServer() {
       res.status(500).json({ error: err.message, code: err.code });
     }
   });
-  // Broadcast Push Notification
+
+  // Broadcast Push Notification (Supports topic OR token multicast)
   app.post("/api/broadcast-push", async (req, res) => {
-    const { tokens, title, body, url } = req.body;
-    console.log(`[Push API] Attempting to broadcast to ${tokens?.length || 0} tokens`);
+    const { tokens, topic, title, body, url } = req.body;
+    console.log(`[Push API] Broadcast requested. Topic: ${topic || 'none'}, Tokens count: ${tokens?.length || 0}`);
     
     if (!getApps().length) {
       console.error('[Push API] Firebase Admin not configured.');
       return res.status(500).json({ error: 'Firebase Admin not configured' });
     }
-    
-    if (!tokens || !tokens.length) {
-      console.error('[Push API] Missing tokens.');
-      return res.status(400).json({ error: 'Missing tokens' });
-    }
-    
+
     try {
+      if (topic) {
+        const response = await getMessaging().send({
+          topic,
+          notification: { title, body },
+          data: { url: url || '/' }
+        });
+        console.log(`[Push API] Topic broadcast sent successfully: ${response}`);
+        return res.json({ success: true, messageId: response });
+      }
+      
+      if (!tokens || !tokens.length) {
+        console.error('[Push API] Missing tokens or topic.');
+        return res.status(400).json({ error: 'Missing tokens or topic' });
+      }
+
       const message = {
         tokens,
         notification: { title, body },
@@ -302,15 +511,30 @@ async function startServer() {
       console.log(`[Push API] Broadcast success count: ${response.successCount}, failure count: ${response.failureCount}`);
       
       if (response.failureCount > 0) {
-        response.responses.forEach((resp, idx) => {
+        response.responses.forEach(async (resp, idx) => {
           if (!resp.success) {
-             console.error(`[Push API] Failed to send to token ${tokens[idx]}: ${resp.error?.message}`);
+            console.error(`[Push API] Failed to send to token ${tokens[idx]}: ${resp.error?.message}`);
+            if (resp.error?.code === 'messaging/invalid-registration-token' ||
+                resp.error?.code === 'messaging/registration-token-not-registered') {
+              const invalidToken = tokens[idx];
+              console.log(`[Push API] Cleaning up invalid token: ${invalidToken}`);
+              try {
+                const fcmSnap = await getDocs(collection(db, 'fcm_tokens'));
+                fcmSnap.forEach(async (docSnap) => {
+                  const data = docSnap.data();
+                  if (data.tokens && data.tokens.includes(invalidToken)) {
+                    const filtered = data.tokens.filter((t: string) => t !== invalidToken);
+                    await updateDoc(doc(db, 'fcm_tokens', docSnap.id), { tokens: filtered });
+                  }
+                });
+              } catch (e) { /* ignore */ }
+            }
           }
         });
       }
       
       res.json({ success: true, response });
-    } catch (err) {
+    } catch (err: any) {
       console.error('[Push API] FCM Broadcast Error:', err.message);
       res.status(500).json({ error: err.message });
     }
@@ -466,9 +690,10 @@ You can track your order using the provided tracking ID.`
     }
   }
 
-  // Start background task
+  // Start background tasks
   verifyPaymentsBackground();
   setInterval(verifyPaymentsBackground, 30000); // Check every 30s
+  startOrderWatcher();
 
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {

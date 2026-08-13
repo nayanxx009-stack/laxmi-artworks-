@@ -14,8 +14,20 @@ const messaging = firebase.messaging();
 
 messaging.onBackgroundMessage((payload) => {
   console.log('[firebase-messaging-sw.js] Received background message ', payload);
-  // FCM automatically shows a system notification if the payload contains a 'notification' object.
-  // We do NOT call self.registration.showNotification here if it's a notification payload, to avoid duplicates.
+  const notificationTitle = payload.notification?.title || payload.data?.title || 'Laxmi Artworks Update';
+  const notificationOptions = {
+    body: payload.notification?.body || payload.data?.body || 'You have a new update from Laxmi Artworks',
+    icon: payload.notification?.icon || '/vite.svg',
+    badge: '/vite.svg',
+    data: {
+      url: payload.data?.url || payload.fcmOptions?.link || '/'
+    }
+  };
+
+  // If payload does not have a standard 'notification' object, show manual notification:
+  if (!payload.notification) {
+    self.registration.showNotification(notificationTitle, notificationOptions);
+  }
 });
 
 self.addEventListener('notificationclick', (event) => {
@@ -23,12 +35,15 @@ self.addEventListener('notificationclick', (event) => {
   const urlToOpen = event.notification.data?.url || '/';
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
-      if (windowClients.length > 0) {
-        let client = windowClients[0];
-        client.focus();
-        client.postMessage({ type: 'NAVIGATE', url: urlToOpen });
-      } else {
-        clients.openWindow(urlToOpen);
+      for (let client of windowClients) {
+        if (client.url && 'focus' in client) {
+          client.focus();
+          client.postMessage({ type: 'NAVIGATE', url: urlToOpen });
+          return;
+        }
+      }
+      if (clients.openWindow) {
+        return clients.openWindow(urlToOpen);
       }
     })
   );

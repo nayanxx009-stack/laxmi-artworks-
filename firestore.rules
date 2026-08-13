@@ -24,6 +24,11 @@ service cloud.firestore {
     match /users/{userId} {
       allow read: if isSignedIn() && request.auth.uid == userId || isAdmin();
       allow write: if isSignedIn() && request.auth.uid == userId;
+
+      match /notificationTokens/{tokenId} {
+        allow read: if (isSignedIn() && request.auth.uid == userId) || isAdmin();
+        allow write: if true;
+      }
     }
     
     match /inquiries/{inquiryId} {

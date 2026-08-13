@@ -14,6 +14,7 @@ import AdminBackup from './AdminBackup';
 import AdminChat from './AdminChat';
 import AdminInquiries from './AdminInquiries';
 import AdminNotifications from './AdminNotifications';
+import AdminBroadcast from './AdminBroadcast';
 
 
 import { useSiteConfig, defaultSiteConfig, SiteConfig } from '../lib/SiteContext';
@@ -751,7 +752,7 @@ export default function AdminPanel() {
 
               <div className="bg-neutral-900 rounded-3xl border border-white/10 overflow-hidden shadow-2xl">
                 <div className="flex border-b border-white/5 overflow-x-auto no-scrollbar">
-                  {['analytics', 'chat', 'orders', 'inquiries', 'users', 'subscribers', 'reviews', 'backup'].map(view => (
+                  {['analytics', 'chat', 'orders', 'inquiries', 'web-push', 'users', 'subscribers', 'reviews', 'backup'].map(view => (
                     <button 
                       key={view}
                       onClick={() => setDashboardView(view as any)}
@@ -765,6 +766,7 @@ export default function AdminPanel() {
                 <div className="overflow-x-auto">
                   {dashboardView === 'analytics' && <AdminAnalytics stats={stats} orders={orders} users={usersList} />}
                   {dashboardView === 'backup' && <AdminBackup />}
+                  {dashboardView === 'web-push' && <AdminBroadcast />}
                   
                   {dashboardView === 'chat' && <AdminChat />}
                   {dashboardView === 'inquiries' && <AdminInquiries />}
