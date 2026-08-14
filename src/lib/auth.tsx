@@ -64,15 +64,46 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const unsubscribe = onAuthStateChanged(auth, async (u) => {
       if (u) {
         try {
+          const email = (u.email || '').toLowerCase().trim();
+          let currentRole: 'admin' | 'user' = MASTER_ADMINS.includes(email) ? 'admin' : 'user';
+
+          // 1. Check Firebase Auth Custom Claims
+          try {
+            const tokenResult = await u.getIdTokenResult();
+            if (tokenResult.claims.admin === true || tokenResult.claims.role === 'admin') {
+              currentRole = 'admin';
+            }
+          } catch (claimsErr) {
+            // Ignore claims error
+          }
+
+          // 2. Check Firestore 'admins' collection
+          if (currentRole !== 'admin' && email) {
+            try {
+              const adminDoc = await getDoc(doc(db, 'admins', email));
+              if (adminDoc.exists()) {
+                const adminData = adminDoc.data();
+                if (adminData.role !== 'user') {
+                  currentRole = 'admin';
+                }
+              }
+            } catch (adminDocErr) {
+              // Ignore admin doc error
+            }
+          }
+
+          // 3. Check Firestore 'users' collection
           const userDocRef = doc(db, 'users', u.uid);
-          const userDoc = await getDoc(userDocRef);
-          let currentRole: 'admin' | 'user' = 'user';
-          
-          if (userDoc.exists()) {
-            const data = userDoc.data();
-            currentRole = MASTER_ADMINS.includes(u.email?.toLowerCase() || '') ? 'admin' : (data.role || 'user');
-          } else {
-            currentRole = MASTER_ADMINS.includes(u.email?.toLowerCase() || '') ? 'admin' : 'user';
+          try {
+            const userDoc = await getDoc(userDocRef);
+            if (userDoc.exists()) {
+              const data = userDoc.data();
+              if (data.role === 'admin') {
+                currentRole = 'admin';
+              }
+            }
+          } catch (userDocErr) {
+            // Ignore user doc error
           }
 
           await setDoc(userDocRef, {
@@ -88,8 +119,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setUser(u);
         } catch (err) {
           console.error("Failed to save user to db", err);
+          const email = (u.email || '').toLowerCase().trim();
           setUser(u); // fallback
-          setRole(MASTER_ADMINS.includes(u.email?.toLowerCase() || '') ? 'admin' : 'user');
+          setRole(MASTER_ADMINS.includes(email) ? 'admin' : 'user');
         }
       } else {
         setUser(null);

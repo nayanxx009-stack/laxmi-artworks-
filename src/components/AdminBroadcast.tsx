@@ -401,6 +401,31 @@ export default function AdminBroadcast() {
               </div>
             </div>
 
+            {/* Backend IAM & Project State */}
+            {diagReport.serverTargetProjectId && (
+              <div className="p-3 bg-neutral-900/90 border border-white/10 rounded-xl space-y-1.5 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-neutral-400 font-medium">Server Target Project:</span>
+                  <span className="font-mono text-amber-400">{diagReport.serverTargetProjectId}</span>
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-neutral-400 font-medium">Service Account:</span>
+                  <span className="font-mono text-neutral-300">{diagReport.serverServiceAccountEmail}</span>
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-neutral-400 font-medium">Required IAM Permission:</span>
+                  <span className="font-mono text-neutral-200">
+                    {diagReport.serverRequiredIAMPermission} ({diagReport.serverRequiredIAMRole})
+                  </span>
+                </div>
+                {diagReport.serverIamDiagnosticMessage && (
+                  <div className="mt-2 p-2 bg-amber-500/10 border border-amber-500/20 rounded-lg text-amber-300 text-[11px]">
+                    {diagReport.serverIamDiagnosticMessage}
+                  </div>
+                )}
+              </div>
+            )}
+
             {diagReport.error && (
               <div className="p-3 bg-red-500/10 border border-red-500/30 text-red-300 rounded-xl">
                 <strong>Diagnostic Note:</strong> {diagReport.error}

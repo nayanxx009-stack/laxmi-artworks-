@@ -74,7 +74,7 @@ async function hashPassword(password: string) {
 
 
 export default function AdminPanel() {
-  const { user, role, logout: realLogout, loginWithGoogle } = useAuth();
+  const { user, role, loading: authLoading, logout: realLogout, loginWithGoogle } = useAuth();
   const logout = () => {
     // Just redirect to lock the admin panel without signing out of Firebase
     window.location.href = '/';
@@ -133,12 +133,12 @@ export default function AdminPanel() {
     let active = true;
     const checkAdminData = async () => {
       if (user && role === 'admin') {
-        const MASTER_ADMINS = ["gargsubhalaxmi@gmail.com", "nayanxx009@gmail.com", "bolt36520@gmail.com", "admin@example.com"];
-        if (active) setIsOwner(MASTER_ADMINS.includes(user.email?.toLowerCase() || ''));
+        const email = (user.email || '').toLowerCase().trim();
+        if (active) setIsOwner(MASTER_ADMINS.includes(email));
         if (active) setIsAdmin(true);
         
         try {
-          const adminDoc = await getDoc(doc(db, 'admins', user.email!));
+          const adminDoc = await getDoc(doc(db, 'admins', email));
           if (adminDoc.exists() && adminDoc.data().password) {
             if (active) setPasswordFlow('enter');
           } else {
@@ -540,7 +540,7 @@ export default function AdminPanel() {
     }
   };
 
-  if (checkingAuth) {
+  if (checkingAuth || authLoading) {
     return (
       <div className="min-h-screen bg-[#030303] flex flex-col items-center justify-center text-white p-4">
         <Loader2 className="w-10 h-10 animate-spin text-amber-500 mb-4" />

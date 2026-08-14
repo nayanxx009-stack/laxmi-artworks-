@@ -274,6 +274,26 @@ export const requestFCMToken = async (userId: string, email: string): Promise<FC
   }
 };
 
+export interface FCMDiagnosticReport {
+  permission: NotificationPermission | 'unsupported';
+  vapidKeyDetected: boolean;
+  vapidSource?: string;
+  serviceWorkerRegistered: boolean;
+  serviceWorkerScope?: string;
+  fcmTokenGenerated: boolean;
+  tokenPreview?: string;
+  firestoreSaved: boolean;
+  backendRegistered: boolean;
+  serverTargetProjectId?: string;
+  serverServiceAccountEmail?: string;
+  serverRequiredIAMPermission?: string;
+  serverRequiredIAMRole?: string;
+  serverFcmHttpApiStatus?: string;
+  serverIamDiagnosticMessage?: string;
+  error?: string;
+  stepFailed?: string;
+}
+
 export const runFCMDiagnostics = async (
   userId = 'diag_user',
   email = 'diagnostic@laxmiartworks.local'
@@ -342,6 +362,23 @@ export const runFCMDiagnostics = async (
       report.error = regResult.error;
       report.stepFailed = regResult.step || 'getToken';
       console.error('4. FCM Token Generation FAILED:', regResult.error);
+    }
+
+    // 5. Server Backend & IAM Diagnostics Check
+    try {
+      const serverRes = await fetch('/api/admin/fcm-diagnose');
+      if (serverRes.ok) {
+        const serverData = await serverRes.json();
+        report.serverTargetProjectId = serverData.targetProjectId;
+        report.serverServiceAccountEmail = serverData.serviceAccountEmail;
+        report.serverRequiredIAMPermission = serverData.requiredIAMPermission;
+        report.serverRequiredIAMRole = serverData.requiredIAMRole;
+        report.serverFcmHttpApiStatus = serverData.fcmHttpApiStatus;
+        report.serverIamDiagnosticMessage = serverData.iamDiagnosticMessage;
+        console.log('7. Server Backend FCM IAM Status:', serverData);
+      }
+    } catch (serverErr) {
+      console.warn('Could not query /api/admin/fcm-diagnose:', serverErr);
     }
   } catch (err: any) {
     console.error('FCM Diagnostics Exception:', err);

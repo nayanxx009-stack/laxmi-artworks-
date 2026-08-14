@@ -18,13 +18,17 @@ import { getFirestore, query, collection, where, getDocs, getDoc, updateDoc, doc
 try {
   if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
     const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
-    initAdmin({ credential: cert(serviceAccount) });
-    console.log('[Server] Firebase Admin initialized for FCM with service account.');
+    const targetProjectId = serviceAccount.project_id || "laxmi-artworks";
+    initAdmin({
+      credential: cert(serviceAccount),
+      projectId: targetProjectId
+    });
+    console.log(`[Server] Firebase Admin initialized for project "${targetProjectId}" with service account "${serviceAccount.client_email}".`);
   } else {
     initAdmin({ projectId: "laxmi-artworks" });
-    console.log('[Server] Firebase Admin initialized for FCM with ADC.');
+    console.log('[Server] Firebase Admin initialized for project "laxmi-artworks" with ADC.');
   }
-} catch (e) {
+} catch (e: any) {
   console.error('[Server] Failed to initialize Firebase Admin:', e.message);
 }
 
@@ -573,6 +577,67 @@ async function startServer() {
     } catch (err: any) {
       console.error('[Admin FCM Stats] Error:', err.message);
       res.status(500).json({ error: err.message, count: 0, devices: [] });
+    }
+  });
+
+  // Admin FCM Diagnostics Endpoint (Real backend state reflection)
+  app.get("/api/admin/fcm-diagnose", async (req, res) => {
+    try {
+      const isInitialized = getApps().length > 0;
+      let saInfo: any = null;
+      if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
+        try {
+          const parsed = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
+          saInfo = {
+            client_email: parsed.client_email,
+            project_id: parsed.project_id,
+            type: parsed.type
+          };
+        } catch (e) {
+          saInfo = { parseError: 'Failed to parse JSON' };
+        }
+      }
+
+      let fcmHttpApiStatus = 'unknown';
+      let iamDiagnosticMessage = '';
+      let testError: any = null;
+
+      if (isInitialized) {
+        try {
+          // Attempt dryRun send with a test message to inspect real FCM HTTP v1 API & IAM status
+          await getMessaging().send({
+            token: 'test_probe_token_for_iam_verification',
+            notification: { title: 'IAM Diagnostic Probe', body: 'Testing' }
+          }, true);
+          fcmHttpApiStatus = 'accessible';
+        } catch (probeErr: any) {
+          testError = {
+            code: probeErr.code,
+            message: probeErr.message
+          };
+          if (probeErr.message?.includes('cloudmessaging.messages.create') || probeErr.code === 'messaging/mismatched-credential') {
+            fcmHttpApiStatus = 'iam_permission_missing';
+            iamDiagnosticMessage = `Service account "${saInfo?.client_email}" requires the IAM permission "cloudmessaging.messages.create" (Role: "roles/firebasecloudmessaging.admin") on project "${saInfo?.project_id || 'laxmi-artworks'}".`;
+          } else if (probeErr.code === 'messaging/invalid-registration-token' || probeErr.code === 'messaging/registration-token-not-registered' || probeErr.code === 'messaging/argument-error') {
+            // If the probe reached token validation, FCM API & IAM are authorized!
+            fcmHttpApiStatus = 'fcm_api_authorized_and_ready';
+          }
+        }
+      }
+
+      res.json({
+        success: true,
+        initialized: isInitialized,
+        targetProjectId: saInfo?.project_id || "laxmi-artworks",
+        serviceAccountEmail: saInfo?.client_email || "Application Default Credentials",
+        requiredIAMPermission: "cloudmessaging.messages.create",
+        requiredIAMRole: "roles/firebasecloudmessaging.admin",
+        fcmHttpApiStatus,
+        iamDiagnosticMessage: iamDiagnosticMessage || undefined,
+        testError: testError || undefined
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
     }
   });
 
