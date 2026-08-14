@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Send, Bell, Smartphone, Monitor, ShieldCheck, CheckCircle2, AlertCircle, RefreshCw } from 'lucide-react';
+import { Send, Bell, Smartphone, Monitor, ShieldCheck, CheckCircle2, AlertCircle, RefreshCw, Wrench } from 'lucide-react';
 import { getDocs, collection } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import { requestFCMToken } from '../lib/fcm';
+import { requestFCMToken, runFCMDiagnostics, FCMDiagnosticReport } from '../lib/fcm';
 import { useAuth } from '../lib/auth';
 
 export default function AdminBroadcast() {
@@ -19,6 +19,22 @@ export default function AdminBroadcast() {
   const [showConfirm, setShowConfirm] = useState(false);
   const [result, setResult] = useState<{ success: boolean; message: string; details?: any } | null>(null);
   const [testSending, setTestSending] = useState(false);
+
+  const [diagRunning, setDiagRunning] = useState(false);
+  const [diagReport, setDiagReport] = useState<FCMDiagnosticReport | null>(null);
+
+  const runDiagnostics = async () => {
+    setDiagRunning(true);
+    try {
+      const report = await runFCMDiagnostics(user?.uid || 'admin_diag', user?.email || 'admin@laxmiartworks.local');
+      setDiagReport(report);
+      fetchTokenStats();
+    } catch (e: any) {
+      console.error('Diagnostics error:', e);
+    } finally {
+      setDiagRunning(false);
+    }
+  };
 
   const fetchTokenStats = async () => {
     setLoadingStats(true);
@@ -320,6 +336,78 @@ export default function AdminBroadcast() {
             {isSending ? 'Sending Broadcast...' : 'Broadcast Notification'}
           </button>
         </div>
+      </div>
+
+      {/* Internal Diagnostics & Health Tool */}
+      <div className="bg-neutral-900 border border-white/10 p-6 rounded-3xl space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+              <Wrench className="text-amber-400" size={16} /> Production FCM Diagnostics Tool
+            </h3>
+            <p className="text-xs text-neutral-400 mt-0.5">
+              Tests live browser permission → Service Worker → VAPID Key → Token generation → Firestore → Backend.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={runDiagnostics}
+            disabled={diagRunning}
+            className="px-4 py-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-400 hover:bg-amber-500/20 text-xs font-bold transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+          >
+            {diagRunning ? <RefreshCw className="animate-spin" size={14} /> : <Wrench size={14} />}
+            {diagRunning ? 'Testing Complete Flow...' : 'Run FCM Diagnostics'}
+          </button>
+        </div>
+
+        {diagReport && (
+          <div className="p-4 bg-black/40 border border-white/10 rounded-2xl space-y-3 text-xs">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+              <div className="p-2.5 bg-neutral-900 border border-white/5 rounded-xl">
+                <span className="text-neutral-500 text-[10px] uppercase font-bold block">1. Permission</span>
+                <span className={`font-bold ${diagReport.permission === 'granted' ? 'text-green-400' : 'text-amber-400'}`}>
+                  {diagReport.permission}
+                </span>
+              </div>
+              <div className="p-2.5 bg-neutral-900 border border-white/5 rounded-xl">
+                <span className="text-neutral-500 text-[10px] uppercase font-bold block">2. Service Worker</span>
+                <span className={`font-bold ${diagReport.serviceWorkerRegistered ? 'text-green-400' : 'text-red-400'}`}>
+                  {diagReport.serviceWorkerRegistered ? 'Registered ✓' : 'Failed ✕'}
+                </span>
+              </div>
+              <div className="p-2.5 bg-neutral-900 border border-white/5 rounded-xl">
+                <span className="text-neutral-500 text-[10px] uppercase font-bold block">3. VAPID Public Key</span>
+                <span className={`font-bold ${diagReport.vapidKeyDetected ? 'text-green-400' : 'text-amber-400'}`}>
+                  {diagReport.vapidKeyDetected ? `Detected (${diagReport.vapidSource}) ✓` : 'Not Found ✕'}
+                </span>
+              </div>
+              <div className="p-2.5 bg-neutral-900 border border-white/5 rounded-xl">
+                <span className="text-neutral-500 text-[10px] uppercase font-bold block">4. FCM Token</span>
+                <span className={`font-bold ${diagReport.fcmTokenGenerated ? 'text-green-400' : 'text-red-400'}`}>
+                  {diagReport.fcmTokenGenerated ? 'Generated ✓' : 'Failed ✕'}
+                </span>
+              </div>
+              <div className="p-2.5 bg-neutral-900 border border-white/5 rounded-xl">
+                <span className="text-neutral-500 text-[10px] uppercase font-bold block">5. Firestore Save</span>
+                <span className={`font-bold ${diagReport.firestoreSaved ? 'text-green-400' : 'text-amber-400'}`}>
+                  {diagReport.firestoreSaved ? 'Saved in DB ✓' : 'Pending/Notice'}
+                </span>
+              </div>
+              <div className="p-2.5 bg-neutral-900 border border-white/5 rounded-xl">
+                <span className="text-neutral-500 text-[10px] uppercase font-bold block">6. Backend Sync</span>
+                <span className={`font-bold ${diagReport.backendRegistered ? 'text-green-400' : 'text-amber-400'}`}>
+                  {diagReport.backendRegistered ? 'Synchronized ✓' : 'Pending/Notice'}
+                </span>
+              </div>
+            </div>
+
+            {diagReport.error && (
+              <div className="p-3 bg-red-500/10 border border-red-500/30 text-red-300 rounded-xl">
+                <strong>Diagnostic Note:</strong> {diagReport.error}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Confirmation Modal */}

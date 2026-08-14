@@ -3,6 +3,7 @@ import express from "express";
 import cors from "cors";
 import nodemailer from "nodemailer";
 import path from "path";
+import fs from "fs";
 import { createServer as createViteServer } from "vite";
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
@@ -406,6 +407,33 @@ async function startServer() {
     }
   }
 
+  // Explicit route for Firebase Service Worker
+  app.get("/firebase-messaging-sw.js", (req, res) => {
+    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+    res.setHeader('Service-Worker-Allowed', '/');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    const swPathProd = path.join(process.cwd(), 'dist', 'firebase-messaging-sw.js');
+    const swPathDev = path.join(process.cwd(), 'public', 'firebase-messaging-sw.js');
+    const swPath = fs.existsSync(swPathProd) ? swPathProd : swPathDev;
+    if (fs.existsSync(swPath)) {
+      res.sendFile(swPath);
+    } else {
+      res.status(404).send('// Service worker file not found');
+    }
+  });
+
+  // Expose public runtime FCM configuration and public VAPID key
+  app.get("/api/fcm-config", (req, res) => {
+    const vapidKey = process.env.VITE_VAPID_KEY || process.env.VAPID_KEY || process.env.FIREBASE_VAPID_KEY || '';
+    res.json({
+      success: true,
+      projectId: "laxmi-artworks",
+      messagingSenderId: "598865578283",
+      appId: "1:598865578283:web:edb8d8eb2eef1c9129dd6e",
+      vapidKey: vapidKey.trim()
+    });
+  });
+
   // Register FCM Token via Server API
   app.post("/api/register-fcm-token", async (req, res) => {
     const { userId, email, token, platform, browser, userAgent } = req.body;
@@ -420,8 +448,15 @@ async function startServer() {
     try {
       // 1. Save in users/{userId}/notificationTokens/{safeTokenId}
       const userTokenDocRef = doc(db, 'users', targetUserId, 'notificationTokens', safeTokenId);
-      const existingDocSnap = await getDoc(userTokenDocRef);
-      const createdAt = existingDocSnap.exists() ? existingDocSnap.data().createdAt || now : now;
+      let createdAt = now;
+      try {
+        const existingDocSnap = await getDoc(userTokenDocRef);
+        if (existingDocSnap.exists()) {
+          createdAt = existingDocSnap.data().createdAt || now;
+        }
+      } catch (readErr) {
+        // Continue with now
+      }
 
       await setDoc(userTokenDocRef, {
         token,
@@ -437,28 +472,36 @@ async function startServer() {
       }, { merge: true });
 
       // 2. Save in fcm_tokens/{userId}
-      const fcmDocRef = doc(db, 'fcm_tokens', targetUserId);
-      const docSnap = await getDoc(fcmDocRef);
-      let tokens = [token];
-      if (docSnap.exists()) {
-        const existingData = docSnap.data();
-        if (existingData.tokens && Array.isArray(existingData.tokens)) {
-          if (!existingData.tokens.includes(token)) {
-            tokens = [...existingData.tokens, token];
-          } else {
-            tokens = existingData.tokens;
+      try {
+        const fcmDocRef = doc(db, 'fcm_tokens', targetUserId);
+        let tokens = [token];
+        try {
+          const docSnap = await getDoc(fcmDocRef);
+          if (docSnap.exists()) {
+            const existingData = docSnap.data();
+            if (existingData.tokens && Array.isArray(existingData.tokens)) {
+              if (!existingData.tokens.includes(token)) {
+                tokens = [...existingData.tokens, token];
+              } else {
+                tokens = existingData.tokens;
+              }
+            } else if (existingData.token && existingData.token !== token) {
+              tokens = [existingData.token, token];
+            }
           }
-        } else if (existingData.token && existingData.token !== token) {
-          tokens = [existingData.token, token];
+        } catch (fcmReadErr) {
+          // Continue with [token]
         }
+        await setDoc(fcmDocRef, {
+          tokens,
+          token,
+          userId: targetUserId,
+          email: targetEmail,
+          updatedAt: now
+        }, { merge: true });
+      } catch (fcmErr) {
+        console.warn('[Register FCM] fcm_tokens write notice:', fcmErr);
       }
-      await setDoc(fcmDocRef, {
-        tokens,
-        token,
-        userId: targetUserId,
-        email: targetEmail,
-        updatedAt: now
-      }, { merge: true });
 
       // 3. Auto-subscribe to all_users topic
       if (getApps().length) {
