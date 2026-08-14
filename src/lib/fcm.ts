@@ -123,15 +123,13 @@ export const requestFCMToken = async (userId: string, email: string): Promise<FC
     let registration: ServiceWorkerRegistration;
     try {
       registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js', { scope: '/' });
-      console.log("[FCM] Service worker registration: Registered, scope =", registration.scope);
-      
       const readyReg = await navigator.serviceWorker.ready;
       if (readyReg) {
         registration = readyReg;
       }
-      console.log("[FCM] Service worker active: Ready and active on scope", registration.scope);
+      console.log(`[FCM] service worker = SUCCESS (${registration.scope})`);
     } catch (swErr: any) {
-      console.error("[FCM] Service worker registration failed:", swErr);
+      console.error("[FCM] service worker = FAILED:", swErr);
       return { 
         success: false, 
         error: `Service worker registration failed: ${swErr.message || swErr}`, 
@@ -155,7 +153,7 @@ export const requestFCMToken = async (userId: string, email: string): Promise<FC
     try {
       token = await getToken(messaging, getTokenOptions);
     } catch (getTokenErr: any) {
-      console.error("[FCM] Calling getToken error:", getTokenErr);
+      console.error("[FCM] token = FAILED:", getTokenErr);
       let userErrMsg = getTokenErr.message || 'Failed to generate FCM Web Push Token';
       if (getTokenErr.code === 'messaging/missing-vapid-key') {
         userErrMsg = 'VAPID public key is missing or not configured for Web Push. Web Push requires VITE_VAPID_KEY.';
@@ -172,10 +170,10 @@ export const requestFCMToken = async (userId: string, email: string): Promise<FC
 
     // 6. Token validation
     if (!token || token.trim().length === 0) {
-      console.error("[FCM] Token generated: Received empty token");
+      console.error("[FCM] token = FAILED (empty token)");
       return { success: false, error: 'Firebase returned an empty notification token.', step: 'getToken' };
     }
-    console.log(`[FCM] Token generated: Success (${token.substring(0, 15)}...)`);
+    console.log(`[FCM] token = SUCCESS (${token.substring(0, 15)}...)`);
 
     // 7. Firestore token save & Server API registration
     console.log("[FCM] Token saved: Saving token to Firestore and Server API...");
