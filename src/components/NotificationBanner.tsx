@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Bell, CheckCircle2, AlertCircle, RefreshCw, X } from 'lucide-react';
 import { useAuth } from '../lib/auth';
@@ -14,10 +14,14 @@ export default function NotificationBanner() {
   const [isEnabling, setIsEnabling] = useState(false);
   const [status, setStatus] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
 
+  const mountedRef = useRef(false);
+
   useEffect(() => {
+    mountedRef.current = true;
+
     if (typeof window === 'undefined' || !('Notification' in window)) {
       console.log('[FCM] Notification.permission = unsupported');
-      console.log('[FCM] Prompt rendered = false (unsupported)');
+      console.log('[FCM] Notification prompt rendered = NO (unsupported)');
       return;
     }
 
@@ -27,9 +31,9 @@ export default function NotificationBanner() {
 
     const isAdminRoute = location.pathname.startsWith('/secret-admin');
 
-    // 1. Manual trigger event listener (e.g., from settings or custom triggers)
+    // 1. Manual trigger listener
     const handleOpenModal = () => {
-      console.log('[FCM] Prompt rendered = true (manual trigger)');
+      console.log('[FCM] Notification prompt rendered = YES (manual trigger)');
       setIsVisible(true);
       setStatus(null);
     };
@@ -37,7 +41,8 @@ export default function NotificationBanner() {
 
     // 2. If already granted, silently sync token in background and NEVER show prompt
     if (currentPerm === 'granted') {
-      console.log('[FCM] Prompt rendered = false (already granted)');
+      console.log('[FCM] Notification prompt rendered = NO (already granted)');
+      setIsVisible(false);
       const uId = user?.uid || 'guest_' + (localStorage.getItem('laxmi_guest_id') || Math.random().toString(36).substring(2, 9));
       if (!localStorage.getItem('laxmi_guest_id')) localStorage.setItem('laxmi_guest_id', uId);
       requestFCMToken(uId, user?.email || 'guest@laxmiartworks.local').catch(() => {});
@@ -46,30 +51,36 @@ export default function NotificationBanner() {
       };
     }
 
-    // 3. If denied, do not show prompt on page load
+    // 3. If denied, do not show prompt automatically
     if (currentPerm === 'denied') {
-      console.log('[FCM] Prompt rendered = false (permission denied)');
+      console.log('[FCM] Notification prompt rendered = NO (permission denied)');
+      setIsVisible(false);
       return () => {
         window.removeEventListener('open-notification-modal', handleOpenModal);
       };
     }
 
-    // 4. If default & on user website, show prompt after brief delay
+    // 4. If default & on user website, show prompt
     if (currentPerm === 'default' && !isAdminRoute) {
-      const isSessionDismissed = sessionStorage.getItem('fcm_modal_dismissed_session') === 'true';
-      if (!isSessionDismissed) {
+      const isDismissed = sessionStorage.getItem('fcm_prompt_closed') === 'true';
+      if (!isDismissed) {
         const timer = setTimeout(() => {
-          console.log('[FCM] Prompt rendered = true (default permission)');
-          setIsVisible(true);
-        }, 1200);
+          if (mountedRef.current && Notification.permission === 'default') {
+            console.log('[FCM] Notification prompt rendered = YES');
+            setIsVisible(true);
+          }
+        }, 500);
         return () => {
           clearTimeout(timer);
           window.removeEventListener('open-notification-modal', handleOpenModal);
         };
+      } else {
+        console.log('[FCM] Notification prompt rendered = NO (dismissed in session)');
       }
     }
 
     return () => {
+      mountedRef.current = false;
       window.removeEventListener('open-notification-modal', handleOpenModal);
     };
   }, [user, location.pathname]);
@@ -81,22 +92,24 @@ export default function NotificationBanner() {
 
     if (typeof window === 'undefined' || !('Notification' in window)) {
       setIsEnabling(false);
+      console.log('[FCM] Final status = FAILED (Notifications unsupported)');
       setStatus({
         type: 'error',
-        message: 'Web notifications are not supported in this browser.'
+        message: 'Web Push Notifications are not supported in this browser.'
       });
       return;
     }
 
-    // CRITICAL: Call Notification.requestPermission() immediately within user click gesture
+    // DIRECT NATIVE CALL ON USER GESTURE
+    console.log('[FCM] Calling Notification.requestPermission()');
     let requestedPerm: NotificationPermission = 'default';
     try {
       requestedPerm = await Notification.requestPermission();
-      console.log(`[FCM] requestPermission result = ${requestedPerm}`);
+      console.log(`[FCM] Permission result = ${requestedPerm}`);
     } catch (permErr: any) {
-      console.error('[FCM] requestPermission exception:', permErr);
+      console.error('[FCM] Permission request error:', permErr);
       requestedPerm = Notification.permission;
-      console.log(`[FCM] requestPermission result = ${requestedPerm}`);
+      console.log(`[FCM] Permission result = ${requestedPerm}`);
     }
 
     setPermission(requestedPerm);
@@ -106,18 +119,18 @@ export default function NotificationBanner() {
       if (requestedPerm === 'denied') {
         setStatus({
           type: 'error',
-          message: 'Notifications are blocked in your browser settings. Please click the lock or site settings icon in your browser address bar to allow notifications.'
+          message: 'Notifications are blocked in your browser settings. Please click the lock or site settings icon in your address bar to allow notifications.'
         });
       } else {
         setStatus({
           type: 'error',
-          message: 'Notification permission was not granted. Please try again.'
+          message: 'Notification permission was not granted. Please click Enable to try again.'
         });
       }
       return;
     }
 
-    // Permission granted! Proceed to register service worker and generate FCM token
+    // Permission is granted -> Proceed to Service Worker & Token generation
     try {
       let guestId = localStorage.getItem('laxmi_guest_id');
       if (!guestId) {
@@ -140,14 +153,14 @@ export default function NotificationBanner() {
       } else {
         setStatus({
           type: 'error',
-          message: result.error || 'Failed to complete notification setup. Please try again.'
+          message: result.error || 'Failed to complete FCM registration. Please try again.'
         });
       }
     } catch (err: any) {
-      console.error('[FCM] Error after permission granted:', err);
+      console.error('[FCM] Error completing registration:', err);
       setStatus({
         type: 'error',
-        message: err.message || 'An unexpected error occurred while enabling notifications.'
+        message: err.message || 'An error occurred while registering for notifications.'
       });
     } finally {
       setIsEnabling(false);
@@ -156,13 +169,13 @@ export default function NotificationBanner() {
 
   const handleDismiss = () => {
     setIsVisible(false);
-    sessionStorage.setItem('fcm_modal_dismissed_session', 'true');
+    sessionStorage.setItem('fcm_prompt_closed', 'true');
   };
 
   if (!isVisible) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in">
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in">
       <div className="bg-neutral-900 border border-amber-500/30 rounded-3xl p-6 sm:p-8 max-w-md w-full shadow-2xl text-white relative text-center space-y-4 animate-in zoom-in-95">
         
         {/* Close Button */}
@@ -179,7 +192,7 @@ export default function NotificationBanner() {
           <Bell size={28} />
         </div>
 
-        {/* Title */}
+        {/* Title & Description */}
         <div>
           <h3 className="text-lg font-bold text-neutral-100 flex items-center justify-center gap-2">
             Stay Updated With Your Artwork 🎨
@@ -189,7 +202,7 @@ export default function NotificationBanner() {
           </p>
         </div>
 
-        {/* Denied State Banner */}
+        {/* Denied State Warning */}
         {permission === 'denied' && (
           <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-xl text-xs text-red-300 flex items-start gap-2 text-left">
             <AlertCircle size={16} className="shrink-0 mt-0.5" />
@@ -225,6 +238,7 @@ export default function NotificationBanner() {
             <>
               <button
                 id="enable-notifications-btn"
+                type="button"
                 onClick={handleEnable}
                 disabled={isEnabling}
                 className="w-full py-3 rounded-xl bg-amber-500 text-black font-bold text-xs hover:bg-amber-400 transition-all flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20 disabled:opacity-50 cursor-pointer"
@@ -249,6 +263,7 @@ export default function NotificationBanner() {
 
               <button
                 id="dismiss-notifications-btn"
+                type="button"
                 onClick={handleDismiss}
                 disabled={isEnabling}
                 className="w-full py-2.5 rounded-xl bg-white/5 border border-white/10 text-neutral-400 hover:text-white text-xs transition-colors disabled:opacity-50 cursor-pointer"
@@ -263,4 +278,5 @@ export default function NotificationBanner() {
     </div>
   );
 }
+
 

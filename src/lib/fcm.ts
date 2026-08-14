@@ -92,34 +92,37 @@ export async function getVapidKey(): Promise<string | undefined> {
 
 export const requestFCMToken = async (userId: string, email: string): Promise<FCMRegistrationResult> => {
   if (typeof window === 'undefined' || !('Notification' in window)) {
-    console.warn("[FCM] Notification permission: Browser unsupported or SSR");
+    console.warn("[FCM] Notification.permission = unsupported");
     return { success: false, error: 'Web Push Notifications are not supported in this browser.', step: 'browser-support' };
   }
 
   try {
-    // 1. Browser permission
-    console.log("[FCM] Notification permission: Requesting browser permission...");
-    const permission = await Notification.requestPermission();
-    console.log(`[FCM] Notification permission: ${permission}`);
+    // 1. Browser permission verification
+    let permission = Notification.permission;
+    if (permission !== 'granted') {
+      console.log("[FCM] Calling Notification.requestPermission()");
+      permission = await Notification.requestPermission();
+      console.log(`[FCM] Permission result = ${permission}`);
+    } else {
+      console.log(`[FCM] Permission result = ${permission} (already granted)`);
+    }
 
     if (permission !== 'granted') {
       const errMsg = permission === 'denied' 
         ? 'Notifications are blocked in browser settings.' 
         : 'Notification permission was not granted.';
+      console.log(`[FCM] Final status = FAILED (permission ${permission})`);
       return { success: false, error: errMsg, step: 'browser-permission' };
     }
 
     // 2. Firebase Messaging initialization
-    console.log("[FCM] Firebase initialized: Loading messaging instance...");
     const messaging = await getMessagingInstance();
     if (!messaging) {
-      console.error("[FCM] Firebase initialized: Failed to obtain messaging instance");
+      console.error("[FCM] Final status = FAILED (Firebase Messaging initialization failed)");
       return { success: false, error: 'Firebase Messaging is not supported or failed to initialize in this browser.', step: 'firebase-init' };
     }
-    console.log("[FCM] Firebase initialized: Messaging instance ready");
 
     // 3. Service worker registration & readiness
-    console.log("[FCM] Service worker registration: Registering /firebase-messaging-sw.js");
     let registration: ServiceWorkerRegistration;
     try {
       registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js', { scope: '/' });
@@ -127,9 +130,9 @@ export const requestFCMToken = async (userId: string, email: string): Promise<FC
       if (readyReg) {
         registration = readyReg;
       }
-      console.log(`[FCM] service worker = SUCCESS (${registration.scope})`);
+      console.log(`[FCM] Service worker registration = SUCCESS (${registration.scope})`);
     } catch (swErr: any) {
-      console.error("[FCM] service worker = FAILED:", swErr);
+      console.error(`[FCM] Service worker registration = FAILED: ${swErr.message || swErr}`);
       return { 
         success: false, 
         error: `Service worker registration failed: ${swErr.message || swErr}`, 
@@ -140,7 +143,7 @@ export const requestFCMToken = async (userId: string, email: string): Promise<FC
     // 4. VAPID configuration
     const vapidKey = await getVapidKey();
     const isVapidPresent = !!(vapidKey && typeof vapidKey === 'string' && vapidKey.trim().length > 0);
-    console.log(`[FCM] VAPID key present: ${isVapidPresent ? 'YES' : 'NO'}`);
+    console.log(`[FCM] VAPID key available = ${isVapidPresent ? 'YES' : 'NO'}`);
 
     const getTokenOptions: any = { serviceWorkerRegistration: registration };
     if (isVapidPresent && vapidKey) {
@@ -148,18 +151,19 @@ export const requestFCMToken = async (userId: string, email: string): Promise<FC
     }
 
     // 5. Calling getToken
-    console.log("[FCM] Calling getToken: Requesting FCM Web token...");
+    console.log("[FCM] getToken = Calling Firebase getToken()...");
     let token = '';
     try {
       token = await getToken(messaging, getTokenOptions);
     } catch (getTokenErr: any) {
-      console.error("[FCM] token = FAILED:", getTokenErr);
+      console.error("[FCM] getToken = FAILED:", getTokenErr);
       let userErrMsg = getTokenErr.message || 'Failed to generate FCM Web Push Token';
       if (getTokenErr.code === 'messaging/missing-vapid-key') {
         userErrMsg = 'VAPID public key is missing or not configured for Web Push. Web Push requires VITE_VAPID_KEY.';
       } else if (getTokenErr.code === 'messaging/failed-service-worker-registration') {
         userErrMsg = 'Service worker failed to register FCM token.';
       }
+      console.log(`[FCM] Final status = FAILED (${userErrMsg})`);
       return { 
         success: false, 
         error: userErrMsg, 
@@ -170,13 +174,13 @@ export const requestFCMToken = async (userId: string, email: string): Promise<FC
 
     // 6. Token validation
     if (!token || token.trim().length === 0) {
-      console.error("[FCM] token = FAILED (empty token)");
+      console.error("[FCM] Token generated = FAILED (empty token)");
+      console.log("[FCM] Final status = FAILED (empty token)");
       return { success: false, error: 'Firebase returned an empty notification token.', step: 'getToken' };
     }
-    console.log(`[FCM] token = SUCCESS (${token.substring(0, 15)}...)`);
+    console.log(`[FCM] Token generated = SUCCESS (${token.substring(0, 16)}...)`);
 
     // 7. Firestore token save & Server API registration
-    console.log("[FCM] Token saved: Saving token to Firestore and Server API...");
     const { platform, browser, userAgent } = getBrowserInfo();
     const safeTokenId = token.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 100);
     const now = Date.now();
@@ -224,9 +228,8 @@ export const requestFCMToken = async (userId: string, email: string): Promise<FC
         updatedAt: now
       }, { merge: true });
       fsSuccess = true;
-      console.log("[FCM] Firestore token saved: SUCCESS");
     } catch (fsErr) {
-      console.warn("[FCM] Token saved: Client Firestore notice:", fsErr);
+      console.warn("[FCM] Firestore client write notice:", fsErr);
     }
 
     let serverSuccess = false;
@@ -247,17 +250,17 @@ export const requestFCMToken = async (userId: string, email: string): Promise<FC
       const regData = await regRes.json();
       if (regRes.ok && regData.success) {
         serverSuccess = true;
-        console.log("[FCM] Backend token registration: SUCCESS", regData);
+        console.log("[FCM] Backend registration = SUCCESS");
       } else {
-        console.warn("[FCM] Backend token registration returned non-success:", regData);
+        console.warn("[FCM] Backend registration = NOTICE:", regData);
       }
     } catch (serverErr) {
-      console.warn("[FCM] Token saved: Server API notice:", serverErr);
+      console.warn("[FCM] Backend registration = ERROR:", serverErr);
     }
 
     // Save token registered state locally
     localStorage.setItem('fcm_token_registered', 'true');
-    console.log("[FCM] Final status: SUCCESS");
+    console.log("[FCM] Final status = SUCCESS");
 
     return { 
       success: true, 
@@ -266,7 +269,7 @@ export const requestFCMToken = async (userId: string, email: string): Promise<FC
       details: { firestoreSaved: fsSuccess, backendRegistered: serverSuccess } 
     };
   } catch (err: any) {
-    console.error("[FCM] Final status: ERROR", err);
+    console.error("[FCM] Final status = FAILED:", err);
     return { success: false, error: err.message || 'Unexpected FCM error', step: 'unknown' };
   }
 };
