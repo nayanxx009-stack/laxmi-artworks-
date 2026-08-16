@@ -20,15 +20,32 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(self.clients.claim());
 });
 
+const swBroadcastChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('laxmi_fcm_sw_channel') : null;
+
+function notifyClients(type, data) {
+  try {
+    if (swBroadcastChannel) {
+      swBroadcastChannel.postMessage({ type, data, timestamp: Date.now() });
+    }
+  } catch (e) {}
+  self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
+    windowClients.forEach(client => {
+      client.postMessage({ type, data, timestamp: Date.now() });
+    });
+  }).catch(() => {});
+}
+
 const messaging = firebase.messaging();
 
 messaging.onBackgroundMessage((payload) => {
   console.log('[firebase-messaging-sw.js] Received background message:', payload);
+  notifyClients('BACKGROUND_MESSAGE_RECEIVED', payload);
+
   const notificationTitle = payload.notification?.title || payload.data?.title || 'Laxmi Artworks';
   const notificationOptions = {
     body: payload.notification?.body || payload.data?.body || 'You have a new update from Laxmi Artworks',
-    icon: payload.notification?.icon || '/vite.svg',
-    badge: payload.notification?.badge || '/vite.svg',
+    icon: payload.notification?.icon || payload.data?.icon || '/icon-192.png',
+    badge: payload.notification?.badge || payload.data?.badge || '/icon-192.png',
     tag: payload.data?.tag || ('laxmi-push-' + Date.now()),
     renotify: true,
     data: {
@@ -36,8 +53,14 @@ messaging.onBackgroundMessage((payload) => {
     }
   };
 
-  // Always display system notification in background
-  return self.registration.showNotification(notificationTitle, notificationOptions);
+  // Display system notification in background
+  return self.registration.showNotification(notificationTitle, notificationOptions).then(() => {
+    console.log('[firebase-messaging-sw.js] Notification displayed successfully:', notificationTitle);
+    notifyClients('NOTIFICATION_DISPLAY_ATTEMPTED', { success: true, title: notificationTitle });
+  }).catch((err) => {
+    console.error('[firebase-messaging-sw.js] Error displaying notification:', err);
+    notifyClients('NOTIFICATION_DISPLAY_ATTEMPTED', { success: false, error: err.message });
+  });
 });
 
 self.addEventListener('notificationclick', (event) => {

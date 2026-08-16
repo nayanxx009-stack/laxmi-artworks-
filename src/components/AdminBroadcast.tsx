@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Send, Bell, Smartphone, Monitor, ShieldCheck, CheckCircle2, AlertCircle, RefreshCw, Wrench } from 'lucide-react';
+import { Send, Bell, Smartphone, Monitor, ShieldCheck, CheckCircle2, AlertCircle, RefreshCw, Wrench, Info } from 'lucide-react';
 import { getDocs, collection } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { requestFCMToken, runFCMDiagnostics, FCMDiagnosticReport } from '../lib/fcm';
@@ -22,6 +22,45 @@ export default function AdminBroadcast() {
 
   const [diagRunning, setDiagRunning] = useState(false);
   const [diagReport, setDiagReport] = useState<FCMDiagnosticReport | null>(null);
+  const [swEvents, setSwEvents] = useState<{ bgReceived?: boolean; displayAttempted?: boolean; lastMsg?: any }>({});
+
+  useEffect(() => {
+    // Listen for Service Worker telemetry events
+    let channel: BroadcastChannel | null = null;
+    try {
+      if (typeof BroadcastChannel !== 'undefined') {
+        channel = new BroadcastChannel('laxmi_fcm_sw_channel');
+        channel.onmessage = (event) => {
+          const { type, data } = event.data || {};
+          if (type === 'BACKGROUND_MESSAGE_RECEIVED') {
+            setSwEvents(prev => ({ ...prev, bgReceived: true, lastMsg: data }));
+          } else if (type === 'NOTIFICATION_DISPLAY_ATTEMPTED') {
+            setSwEvents(prev => ({ ...prev, displayAttempted: true }));
+          }
+        };
+      }
+    } catch (e) {}
+
+    const handleSwMessage = (event: MessageEvent) => {
+      const { type, data } = event.data || {};
+      if (type === 'BACKGROUND_MESSAGE_RECEIVED') {
+        setSwEvents(prev => ({ ...prev, bgReceived: true, lastMsg: data }));
+      } else if (type === 'NOTIFICATION_DISPLAY_ATTEMPTED') {
+        setSwEvents(prev => ({ ...prev, displayAttempted: true }));
+      }
+    };
+
+    if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', handleSwMessage);
+    }
+
+    return () => {
+      if (channel) channel.close();
+      if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+        navigator.serviceWorker.removeEventListener('message', handleSwMessage);
+      }
+    };
+  }, []);
 
   const runDiagnostics = async () => {
     setDiagRunning(true);
@@ -118,7 +157,7 @@ export default function AdminBroadcast() {
       if (res.ok && data.success) {
         const msgId = data.messageId || 'FCM-ACCEPTED';
         const tokenPreview = data.tokenPreview || (myToken.substring(0, 8) + '...' + myToken.substring(myToken.length - 6));
-        alert(`✅ Test Push Accepted by Firebase FCM!\n\n• Message ID: ${msgId}\n• Target Token: ${tokenPreview}\n• Status: Delivered to FCM Gateway\n\n📌 Note: If testing background delivery on Android/Chrome, minimize or background this browser tab so the Android notification tray displays the system push.`);
+        alert(`Stage A: FCM_SEND_ACCEPTED\n\n• Firebase Message ID: ${msgId}\n• Target Token Match: ${tokenPreview}\n• Status: Firebase Admin SDK accepted the message.\n\n📌 Android Background Note:\nTo see the notification in the Android system tray, minimize or background Chrome before or immediately after sending.`);
       } else {
         alert(`❌ Test push failed: ${data.error || 'Server error'} (Code: ${data.code || 'FCM_ERROR'})`);
       }
@@ -345,10 +384,10 @@ export default function AdminBroadcast() {
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
-              <Wrench className="text-amber-400" size={16} /> Production FCM Diagnostics Tool
+              <Wrench className="text-amber-400" size={16} /> Production FCM 4-Stage Diagnostics
             </h3>
             <p className="text-xs text-neutral-400 mt-0.5">
-              Tests live browser permission → Service Worker → VAPID Key → Token generation → Firestore → Backend.
+              Distinguishes FCM Gateway acceptance, Service Worker registration, background receipt, and notification display.
             </p>
           </div>
           <button
@@ -358,49 +397,77 @@ export default function AdminBroadcast() {
             className="px-4 py-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-400 hover:bg-amber-500/20 text-xs font-bold transition-all flex items-center justify-center gap-2 disabled:opacity-50"
           >
             {diagRunning ? <RefreshCw className="animate-spin" size={14} /> : <Wrench size={14} />}
-            {diagRunning ? 'Testing Complete Flow...' : 'Run FCM Diagnostics'}
+            {diagRunning ? 'Testing 4 Stages...' : 'Run FCM Diagnostics'}
           </button>
         </div>
 
         {diagReport && (
-          <div className="p-4 bg-black/40 border border-white/10 rounded-2xl space-y-3 text-xs">
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+          <div className="p-4 bg-black/40 border border-white/10 rounded-2xl space-y-4 text-xs">
+            {/* 4 Delivery Pipeline Stages */}
+            <div className="space-y-2">
+              <h4 className="text-[11px] font-bold uppercase tracking-wider text-neutral-400">Delivery Pipeline Status</h4>
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2.5">
+                <div className="p-3 bg-neutral-900 border border-white/5 rounded-xl">
+                  <span className="text-neutral-500 text-[10px] uppercase font-bold block">Stage A</span>
+                  <span className="font-bold text-white block mt-0.5">FCM Gateway API</span>
+                  <span className={`text-[11px] font-semibold ${diagReport.fcmSendAccepted ? 'text-green-400' : 'text-amber-400'}`}>
+                    {diagReport.fcmSendAccepted ? 'FCM_SEND_ACCEPTED ✓' : 'Checking/Pending'}
+                  </span>
+                </div>
+                <div className="p-3 bg-neutral-900 border border-white/5 rounded-xl">
+                  <span className="text-neutral-500 text-[10px] uppercase font-bold block">Stage B</span>
+                  <span className="font-bold text-white block mt-0.5">Service Worker</span>
+                  <span className={`text-[11px] font-semibold ${diagReport.serviceWorkerRegistered ? 'text-green-400' : 'text-red-400'}`}>
+                    {diagReport.serviceWorkerRegistered ? 'SERVICE_WORKER_REGISTERED ✓' : 'Failed ✕'}
+                  </span>
+                </div>
+                <div className="p-3 bg-neutral-900 border border-white/5 rounded-xl">
+                  <span className="text-neutral-500 text-[10px] uppercase font-bold block">Stage C</span>
+                  <span className="font-bold text-white block mt-0.5">Background Handler</span>
+                  <span className={`text-[11px] font-semibold ${swEvents.bgReceived ? 'text-green-400' : 'text-neutral-400'}`}>
+                    {swEvents.bgReceived ? 'MESSAGE_RECEIVED ✓' : 'Awaiting Test Event'}
+                  </span>
+                </div>
+                <div className="p-3 bg-neutral-900 border border-white/5 rounded-xl">
+                  <span className="text-neutral-500 text-[10px] uppercase font-bold block">Stage D</span>
+                  <span className="font-bold text-white block mt-0.5">Notification Display</span>
+                  <span className={`text-[11px] font-semibold ${swEvents.displayAttempted ? 'text-green-400' : 'text-neutral-400'}`}>
+                    {swEvents.displayAttempted ? 'DISPLAY_ATTEMPTED ✓' : 'Awaiting Test Event'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Core Diagnostics Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 pt-2 border-t border-white/5">
               <div className="p-2.5 bg-neutral-900 border border-white/5 rounded-xl">
-                <span className="text-neutral-500 text-[10px] uppercase font-bold block">1. Permission</span>
+                <span className="text-neutral-500 text-[10px] uppercase font-bold block">Browser Permission</span>
                 <span className={`font-bold ${diagReport.permission === 'granted' ? 'text-green-400' : 'text-amber-400'}`}>
                   {diagReport.permission}
                 </span>
               </div>
               <div className="p-2.5 bg-neutral-900 border border-white/5 rounded-xl">
-                <span className="text-neutral-500 text-[10px] uppercase font-bold block">2. Service Worker</span>
-                <span className={`font-bold ${diagReport.serviceWorkerRegistered ? 'text-green-400' : 'text-red-400'}`}>
-                  {diagReport.serviceWorkerRegistered ? 'Registered ✓' : 'Failed ✕'}
-                </span>
-              </div>
-              <div className="p-2.5 bg-neutral-900 border border-white/5 rounded-xl">
-                <span className="text-neutral-500 text-[10px] uppercase font-bold block">3. VAPID Public Key</span>
+                <span className="text-neutral-500 text-[10px] uppercase font-bold block">VAPID Public Key</span>
                 <span className={`font-bold ${diagReport.vapidKeyDetected ? 'text-green-400' : 'text-amber-400'}`}>
                   {diagReport.vapidKeyDetected ? `Detected (${diagReport.vapidSource}) ✓` : 'Not Found ✕'}
                 </span>
               </div>
               <div className="p-2.5 bg-neutral-900 border border-white/5 rounded-xl">
-                <span className="text-neutral-500 text-[10px] uppercase font-bold block">4. FCM Token</span>
-                <span className={`font-bold ${diagReport.fcmTokenGenerated ? 'text-green-400' : 'text-red-400'}`}>
-                  {diagReport.fcmTokenGenerated ? 'Generated ✓' : 'Failed ✕'}
+                <span className="text-neutral-500 text-[10px] uppercase font-bold block">Target FCM Token</span>
+                <span className={`font-mono text-[11px] ${diagReport.fcmTokenGenerated ? 'text-green-400' : 'text-red-400'}`}>
+                  {diagReport.tokenPreview || 'Not Generated'}
                 </span>
               </div>
-              <div className="p-2.5 bg-neutral-900 border border-white/5 rounded-xl">
-                <span className="text-neutral-500 text-[10px] uppercase font-bold block">5. Firestore Save</span>
-                <span className={`font-bold ${diagReport.firestoreSaved ? 'text-green-400' : 'text-amber-400'}`}>
-                  {diagReport.firestoreSaved ? 'Saved in DB ✓' : 'Pending/Notice'}
-                </span>
+            </div>
+
+            {/* Android OS Level Permission Notice */}
+            <div className="p-3 bg-neutral-900/90 border border-amber-500/20 rounded-xl space-y-1 text-xs">
+              <div className="flex items-center gap-2 text-amber-400 font-bold">
+                <Info size={14} /> Android Chrome OS-Level Setting Verification
               </div>
-              <div className="p-2.5 bg-neutral-900 border border-white/5 rounded-xl">
-                <span className="text-neutral-500 text-[10px] uppercase font-bold block">6. Backend Sync</span>
-                <span className={`font-bold ${diagReport.backendRegistered ? 'text-green-400' : 'text-amber-400'}`}>
-                  {diagReport.backendRegistered ? 'Synchronized ✓' : 'Pending/Notice'}
-                </span>
-              </div>
+              <p className="text-[11px] text-neutral-300 leading-relaxed">
+                If the browser permission above is <strong className="text-green-400">granted</strong> and Firebase returns a message ID, but no banner appears in your Android tray, verify that Android OS has notifications enabled for Chrome: <span className="font-mono text-neutral-200">Android Settings → Apps → Chrome → Notifications → Allow Notifications</span>.
+              </p>
             </div>
 
             {/* Backend IAM & Project State */}
@@ -420,11 +487,6 @@ export default function AdminBroadcast() {
                     {diagReport.serverRequiredIAMPermission} ({diagReport.serverRequiredIAMRole})
                   </span>
                 </div>
-                {diagReport.serverIamDiagnosticMessage && (
-                  <div className="mt-2 p-2 bg-amber-500/10 border border-amber-500/20 rounded-lg text-amber-300 text-[11px]">
-                    {diagReport.serverIamDiagnosticMessage}
-                  </div>
-                )}
               </div>
             )}
 

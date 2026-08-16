@@ -701,8 +701,8 @@ async function startServer() {
           notification: {
             title: String(title || 'Laxmi Artworks'),
             body: String(body || ''),
-            icon: '/vite.svg',
-            badge: '/vite.svg',
+            icon: '/icon-192.png',
+            badge: '/icon-192.png',
             requireInteraction: false
           },
           fcmOptions: {
@@ -769,8 +769,8 @@ async function startServer() {
             notification: {
               title: String(title || 'Laxmi Artworks'),
               body: String(body || ''),
-              icon: '/vite.svg',
-              badge: '/vite.svg'
+              icon: '/icon-192.png',
+              badge: '/icon-192.png'
             },
             fcmOptions: { link: String(url || '/') }
           }
@@ -800,8 +800,8 @@ async function startServer() {
           notification: {
             title: String(title || 'Laxmi Artworks'),
             body: String(body || ''),
-            icon: '/vite.svg',
-            badge: '/vite.svg'
+            icon: '/icon-192.png',
+            badge: '/icon-192.png'
           },
           fcmOptions: { link: String(url || '/') }
         }

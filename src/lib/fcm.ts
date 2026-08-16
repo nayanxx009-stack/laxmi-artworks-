@@ -287,8 +287,10 @@ export interface FCMDiagnosticReport {
   vapidSource?: string;
   serviceWorkerRegistered: boolean;
   serviceWorkerScope?: string;
+  serviceWorkerControlling: boolean;
   fcmTokenGenerated: boolean;
   tokenPreview?: string;
+  tokenHash?: string;
   firestoreSaved: boolean;
   backendRegistered: boolean;
   serverTargetProjectId?: string;
@@ -297,6 +299,10 @@ export interface FCMDiagnosticReport {
   serverRequiredIAMRole?: string;
   serverFcmHttpApiStatus?: string;
   serverIamDiagnosticMessage?: string;
+  fcmSendAccepted?: boolean;
+  fcmProbeMessageId?: string;
+  backgroundMessageReceived?: boolean;
+  notificationDisplayAttempted?: boolean;
   error?: string;
   stepFailed?: string;
 }
@@ -309,9 +315,11 @@ export const runFCMDiagnostics = async (
     permission: typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'unsupported',
     vapidKeyDetected: false,
     serviceWorkerRegistered: false,
+    serviceWorkerControlling: false,
     fcmTokenGenerated: false,
     firestoreSaved: false,
-    backendRegistered: false
+    backendRegistered: false,
+    fcmSendAccepted: false
   };
 
   console.group('🔧 [FCM DIAGNOSTICS] Starting Comprehensive Check...');
@@ -331,9 +339,11 @@ export const runFCMDiagnostics = async (
     if ('serviceWorker' in navigator) {
       try {
         const reg = await navigator.serviceWorker.register('/firebase-messaging-sw.js', { scope: '/' });
-        report.serviceWorkerRegistered = true;
-        report.serviceWorkerScope = reg.scope;
-        console.log('2. Service Worker: Registered at scope', reg.scope);
+        const readyReg = await navigator.serviceWorker.ready;
+        report.serviceWorkerRegistered = !!(reg || readyReg);
+        report.serviceWorkerScope = (readyReg || reg).scope;
+        report.serviceWorkerControlling = !!navigator.serviceWorker.controller;
+        console.log('2. Service Worker: Registered at scope', report.serviceWorkerScope, '| Controlling:', report.serviceWorkerControlling);
       } catch (swErr: any) {
         console.error('2. Service Worker Registration FAILED:', swErr);
         report.error = 'Service Worker Registration Failed: ' + swErr.message;
@@ -359,12 +369,13 @@ export const runFCMDiagnostics = async (
     const regResult = await requestFCMToken(userId, email);
     if (regResult.success && regResult.token) {
       report.fcmTokenGenerated = true;
-      report.tokenPreview = regResult.token.substring(0, 20) + '...';
+      const rawToken = regResult.token;
+      report.tokenPreview = rawToken.length > 16 
+        ? `${rawToken.substring(0, 8)}...${rawToken.substring(rawToken.length - 6)}` 
+        : 'Generated';
       report.firestoreSaved = regResult.details?.firestoreSaved ?? true;
       report.backendRegistered = regResult.details?.backendRegistered ?? true;
-      console.log('4. FCM Token: GENERATED SUCCESS');
-      console.log('5. Firestore Token Saved:', report.firestoreSaved ? 'SUCCESS' : 'NOTICE');
-      console.log('6. Backend Token Registered:', report.backendRegistered ? 'SUCCESS' : 'NOTICE');
+      console.log('4. FCM Token: GENERATED SUCCESS, Preview:', report.tokenPreview);
     } else {
       report.error = regResult.error;
       report.stepFailed = regResult.step || 'getToken';
@@ -382,7 +393,8 @@ export const runFCMDiagnostics = async (
         report.serverRequiredIAMRole = serverData.requiredIAMRole;
         report.serverFcmHttpApiStatus = serverData.fcmHttpApiStatus;
         report.serverIamDiagnosticMessage = serverData.iamDiagnosticMessage;
-        console.log('7. Server Backend FCM IAM Status:', serverData);
+        report.fcmSendAccepted = serverData.fcmHttpApiStatus === 'fcm_api_authorized_and_ready';
+        console.log('5. Server Backend FCM IAM Status:', serverData);
       }
     } catch (serverErr) {
       console.warn('Could not query /api/admin/fcm-diagnose:', serverErr);
