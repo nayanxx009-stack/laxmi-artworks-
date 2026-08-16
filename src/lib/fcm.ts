@@ -47,6 +47,7 @@ export interface FCMDiagnosticReport {
   stepFailed?: string;
 }
 
+export const DEFAULT_VAPID_KEY = "BJUxn7VkzkSVu-gjtAVCPeGZqT4r1xS0whe42rH470rzgZ1ziqAIvST82VJoKjInYOPz_0q0hhF1-jIYCfOFznc";
 let cachedVapidKey: string | null = null;
 
 export async function getVapidKey(): Promise<string | undefined> {
@@ -70,7 +71,7 @@ export async function getVapidKey(): Promise<string | undefined> {
     }
   }
 
-  // 3. Runtime fallback from backend API /api/fcm-config
+  // 3. Runtime fetch from backend API /api/fcm-config
   try {
     const res = await fetch('/api/fcm-config');
     if (res.ok) {
@@ -85,6 +86,12 @@ export async function getVapidKey(): Promise<string | undefined> {
     }
   } catch (err) {
     console.warn('[FCM] Notice: Runtime fetch from /api/fcm-config failed:', err);
+  }
+
+  // 4. Default Project VAPID Public Key
+  if (DEFAULT_VAPID_KEY && DEFAULT_VAPID_KEY.trim().length > 0) {
+    cachedVapidKey = DEFAULT_VAPID_KEY.trim();
+    return cachedVapidKey;
   }
 
   return undefined;

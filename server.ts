@@ -427,14 +427,15 @@ async function startServer() {
   });
 
   // Expose public runtime FCM configuration and public VAPID key
+  const DEFAULT_VAPID_KEY = "BJUxn7VkzkSVu-gjtAVCPeGZqT4r1xS0whe42rH470rzgZ1ziqAIvST82VJoKjInYOPz_0q0hhF1-jIYCfOFznc";
   app.get("/api/fcm-config", (req, res) => {
-    const vapidKey = process.env.VITE_VAPID_KEY || process.env.VAPID_KEY || process.env.FIREBASE_VAPID_KEY || '';
+    const vapidKey = process.env.VITE_VAPID_KEY || process.env.VAPID_KEY || process.env.FIREBASE_VAPID_KEY || DEFAULT_VAPID_KEY;
     res.json({
       success: true,
       projectId: "laxmi-artworks",
       messagingSenderId: "598865578283",
       appId: "1:598865578283:web:edb8d8eb2eef1c9129dd6e",
-      vapidKey: vapidKey.trim()
+      vapidKey: (vapidKey || '').trim()
     });
   });
 

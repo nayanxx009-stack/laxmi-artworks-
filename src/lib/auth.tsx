@@ -67,23 +67,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           const email = (u.email || '').toLowerCase().trim();
           let currentRole: 'admin' | 'user' = MASTER_ADMINS.includes(email) ? 'admin' : 'user';
 
-          // 1. Check Firebase Auth Custom Claims
+          // 1. Check Firebase Auth Custom Claims (force refresh to avoid stale cached claims)
           try {
-            const tokenResult = await u.getIdTokenResult();
+            const tokenResult = await u.getIdTokenResult(true);
             if (tokenResult.claims.admin === true || tokenResult.claims.role === 'admin') {
               currentRole = 'admin';
             }
           } catch (claimsErr) {
-            // Ignore claims error
+            // Fallback to cached token claims if refresh fails
+            try {
+              const cachedTokenResult = await u.getIdTokenResult(false);
+              if (cachedTokenResult.claims.admin === true || cachedTokenResult.claims.role === 'admin') {
+                currentRole = 'admin';
+              }
+            } catch (e) {}
           }
 
-          // 2. Check Firestore 'admins' collection
-          if (currentRole !== 'admin' && email) {
+          // 2. Check Firestore 'admins' collection (by email and by uid)
+          if (currentRole !== 'admin') {
             try {
-              const adminDoc = await getDoc(doc(db, 'admins', email));
-              if (adminDoc.exists()) {
-                const adminData = adminDoc.data();
-                if (adminData.role !== 'user') {
+              if (email) {
+                const adminDocByEmail = await getDoc(doc(db, 'admins', email));
+                if (adminDocByEmail.exists() && adminDocByEmail.data().role !== 'user') {
+                  currentRole = 'admin';
+                }
+              }
+              if (currentRole !== 'admin') {
+                const adminDocByUid = await getDoc(doc(db, 'admins', u.uid));
+                if (adminDocByUid.exists() && adminDocByUid.data().role !== 'user') {
                   currentRole = 'admin';
                 }
               }
