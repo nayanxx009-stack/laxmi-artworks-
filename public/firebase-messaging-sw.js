@@ -23,21 +23,21 @@ self.addEventListener('activate', (event) => {
 const messaging = firebase.messaging();
 
 messaging.onBackgroundMessage((payload) => {
-  console.log('[firebase-messaging-sw.js] Received background message ', payload);
-  const notificationTitle = payload.notification?.title || payload.data?.title || 'Laxmi Artworks Update';
+  console.log('[firebase-messaging-sw.js] Received background message:', payload);
+  const notificationTitle = payload.notification?.title || payload.data?.title || 'Laxmi Artworks';
   const notificationOptions = {
     body: payload.notification?.body || payload.data?.body || 'You have a new update from Laxmi Artworks',
     icon: payload.notification?.icon || '/vite.svg',
-    badge: '/vite.svg',
+    badge: payload.notification?.badge || '/vite.svg',
+    tag: payload.data?.tag || ('laxmi-push-' + Date.now()),
+    renotify: true,
     data: {
       url: payload.data?.url || payload.fcmOptions?.link || '/'
     }
   };
 
-  // If payload does not have a standard 'notification' object, show manual notification:
-  if (!payload.notification) {
-    self.registration.showNotification(notificationTitle, notificationOptions);
-  }
+  // Always display system notification in background
+  return self.registration.showNotification(notificationTitle, notificationOptions);
 });
 
 self.addEventListener('notificationclick', (event) => {

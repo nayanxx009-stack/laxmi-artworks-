@@ -670,7 +670,8 @@ async function startServer() {
   // Send Push Notification via FCM
   app.post("/api/send-push", async (req, res) => {
     const { token, title, body, url, userId } = req.body;
-    console.log(`[Push API] Attempting to send push to token: ${token?.substring(0, 10)}...`);
+    const safeTokenPreview = token ? `${token.substring(0, 8)}...${token.substring(token.length - 6)}` : 'none';
+    console.log(`[Push API] Attempting to send push to token: ${safeTokenPreview}`);
     if (!getApps().length) {
       console.error('[Push API] Firebase Admin not configured.');
       return res.status(500).json({ error: 'Firebase Admin not configured' });
@@ -680,21 +681,45 @@ async function startServer() {
       return res.status(400).json({ error: 'Missing token' });
     }
     try {
-      const message = {
+      const message: any = {
         token,
-        notification: { title, body },
-        data: { url: url || '/' }
+        notification: {
+          title: String(title || 'Laxmi Artworks'),
+          body: String(body || '')
+        },
+        data: {
+          title: String(title || 'Laxmi Artworks'),
+          body: String(body || ''),
+          url: String(url || '/'),
+          click_action: String(url || '/')
+        },
+        webpush: {
+          headers: {
+            Urgency: 'high',
+            TTL: '86400'
+          },
+          notification: {
+            title: String(title || 'Laxmi Artworks'),
+            body: String(body || ''),
+            icon: '/vite.svg',
+            badge: '/vite.svg',
+            requireInteraction: false
+          },
+          fcmOptions: {
+            link: String(url || '/')
+          }
+        }
       };
       const response = await getMessaging().send(message);
-      console.log(`[Push API] Successfully sent message: ${response}`);
-      res.json({ success: true, messageId: response });
-    } catch (err) {
-      console.error('[Push API] FCM Error:', err.message);
+      console.log(`[Push API] Successfully sent message to ${safeTokenPreview} | messageId: ${response}`);
+      res.json({ success: true, messageId: response, tokenPreview: safeTokenPreview });
+    } catch (err: any) {
+      console.error(`[Push API] FCM Error for ${safeTokenPreview}:`, err.message, '| Code:', err.code);
       
       // Remove invalid token from Firestore
       if (err.code === 'messaging/invalid-registration-token' || 
           err.code === 'messaging/registration-token-not-registered') {
-        console.log(`[Push API] Token is invalid or expired. Removing token: ${token}`);
+        console.log(`[Push API] Token is invalid or expired. Removing token: ${safeTokenPreview}`);
         try {
           const fcmTokensRef = collection(db, 'fcm_tokens');
           const snapshot = await getDocs(fcmTokensRef);
@@ -712,7 +737,7 @@ async function startServer() {
         }
       }
       
-      res.status(500).json({ error: err.message, code: err.code });
+      res.status(500).json({ error: err.message, code: err.code, tokenPreview: safeTokenPreview });
     }
   });
 
@@ -730,8 +755,25 @@ async function startServer() {
       if (topic) {
         const response = await getMessaging().send({
           topic,
-          notification: { title, body },
-          data: { url: url || '/' }
+          notification: {
+            title: String(title || 'Laxmi Artworks'),
+            body: String(body || '')
+          },
+          data: {
+            title: String(title || 'Laxmi Artworks'),
+            body: String(body || ''),
+            url: String(url || '/')
+          },
+          webpush: {
+            headers: { Urgency: 'high' },
+            notification: {
+              title: String(title || 'Laxmi Artworks'),
+              body: String(body || ''),
+              icon: '/vite.svg',
+              badge: '/vite.svg'
+            },
+            fcmOptions: { link: String(url || '/') }
+          }
         });
         console.log(`[Push API] Topic broadcast sent successfully: ${response}`);
         return res.json({ success: true, messageId: response });
@@ -742,10 +784,27 @@ async function startServer() {
         return res.status(400).json({ error: 'Missing tokens or topic' });
       }
 
-      const message = {
+      const message: any = {
         tokens,
-        notification: { title, body },
-        data: { url: url || '/' }
+        notification: {
+          title: String(title || 'Laxmi Artworks'),
+          body: String(body || '')
+        },
+        data: {
+          title: String(title || 'Laxmi Artworks'),
+          body: String(body || ''),
+          url: String(url || '/')
+        },
+        webpush: {
+          headers: { Urgency: 'high' },
+          notification: {
+            title: String(title || 'Laxmi Artworks'),
+            body: String(body || ''),
+            icon: '/vite.svg',
+            badge: '/vite.svg'
+          },
+          fcmOptions: { link: String(url || '/') }
+        }
       };
       const response = await getMessaging().sendEachForMulticast(message);
       

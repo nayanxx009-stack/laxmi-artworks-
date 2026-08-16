@@ -115,10 +115,12 @@ export default function AdminBroadcast() {
         body: JSON.stringify({ token: myToken, title: `[TEST] ${title}`, body, url })
       });
       const data = await res.json();
-      if (data.success) {
-        alert('Test notification sent to your current device successfully!');
+      if (res.ok && data.success) {
+        const msgId = data.messageId || 'FCM-ACCEPTED';
+        const tokenPreview = data.tokenPreview || (myToken.substring(0, 8) + '...' + myToken.substring(myToken.length - 6));
+        alert(`✅ Test Push Accepted by Firebase FCM!\n\n• Message ID: ${msgId}\n• Target Token: ${tokenPreview}\n• Status: Delivered to FCM Gateway\n\n📌 Note: If testing background delivery on Android/Chrome, minimize or background this browser tab so the Android notification tray displays the system push.`);
       } else {
-        alert(`Test push failed: ${data.error}`);
+        alert(`❌ Test push failed: ${data.error || 'Server error'} (Code: ${data.code || 'FCM_ERROR'})`);
       }
     } catch (e: any) {
       alert(`Error sending test push: ${e.message}`);

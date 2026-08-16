@@ -26,6 +26,27 @@ export default function ForegroundToast() {
 
       setToast({ title, body, url, icon });
 
+      // If permitted, also trigger native notification for system-level visibility
+      try {
+        if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+          if (document.hidden) {
+            if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+              navigator.serviceWorker.ready.then(reg => {
+                reg.showNotification(title, {
+                  body,
+                  icon,
+                  badge: icon,
+                  tag: 'laxmi-fg-' + Date.now(),
+                  data: { url }
+                });
+              });
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('[ForegroundToast] Native notification display note:', e);
+      }
+
       // Auto dismiss after 8 seconds
       const timer = setTimeout(() => setToast(null), 8000);
       return () => clearTimeout(timer);
