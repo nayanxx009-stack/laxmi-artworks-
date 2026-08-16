@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Send, Bell, Smartphone, Monitor, ShieldCheck, CheckCircle2, AlertCircle, RefreshCw, Wrench, Info } from 'lucide-react';
+import { Send, Bell, Smartphone, Monitor, ShieldCheck, CheckCircle2, AlertCircle, RefreshCw, Wrench, Info, ExternalLink } from 'lucide-react';
 import { getDocs, collection } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { requestFCMToken, runFCMDiagnostics, FCMDiagnosticReport } from '../lib/fcm';
@@ -469,6 +469,32 @@ export default function AdminBroadcast() {
                 If the browser permission above is <strong className="text-green-400">granted</strong> and Firebase returns a message ID, but no banner appears in your Android tray, verify that Android OS has notifications enabled for Chrome: <span className="font-mono text-neutral-200">Android Settings → Apps → Chrome → Notifications → Allow Notifications</span>.
               </p>
             </div>
+
+            {/* Blocked Permission Resolution Guidance */}
+            {diagReport.permission === 'denied' && (
+              <div className="p-3.5 bg-amber-500/10 border border-amber-500/30 rounded-xl space-y-2 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-amber-400 font-bold">
+                    <AlertCircle size={15} /> Notifications Are Blocked in Browser Settings
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => window.open(window.location.href, '_blank')}
+                    className="px-2.5 py-1 bg-amber-500 text-black font-bold text-[10px] rounded-lg flex items-center gap-1 hover:bg-amber-400 transition-all shrink-0"
+                  >
+                    Open in New Tab <ExternalLink size={12} />
+                  </button>
+                </div>
+                <p className="text-[11px] text-neutral-300 leading-relaxed">
+                  Web browsers do not allow re-prompting once permission is set to <em>Denied</em>. To unblock:
+                </p>
+                <ol className="list-decimal list-inside text-[11px] text-neutral-400 space-y-0.5 ml-1">
+                  <li>Click the <strong>Lock / Site Settings</strong> icon in the address bar (or Android Chrome menu ⋮ → Site Settings → Notifications).</li>
+                  <li>Toggle Notifications from <strong>Block</strong> to <strong>Allow</strong>.</li>
+                  <li>Refresh this page or open in a new tab.</li>
+                </ol>
+              </div>
+            )}
 
             {/* Backend IAM & Project State */}
             {diagReport.serverTargetProjectId && (

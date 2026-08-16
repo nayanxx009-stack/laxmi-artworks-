@@ -116,9 +116,9 @@ export const requestFCMToken = async (userId: string, email: string): Promise<FC
 
     if (permission !== 'granted') {
       const errMsg = permission === 'denied' 
-        ? 'Notifications are blocked in browser settings.' 
+        ? 'Notifications are blocked in browser settings. Please allow notifications in site settings or open the app in a new tab.' 
         : 'Notification permission was not granted.';
-      console.log(`[FCM] Final status = FAILED (permission ${permission})`);
+      console.warn(`[FCM] Permission status = ${permission} (${errMsg})`);
       return { success: false, error: errMsg, step: 'browser-permission' };
     }
 
@@ -366,20 +366,29 @@ export const runFCMDiagnostics = async (
     }
 
     // 4. Token Generation Check
-    const regResult = await requestFCMToken(userId, email);
-    if (regResult.success && regResult.token) {
-      report.fcmTokenGenerated = true;
-      const rawToken = regResult.token;
-      report.tokenPreview = rawToken.length > 16 
-        ? `${rawToken.substring(0, 8)}...${rawToken.substring(rawToken.length - 6)}` 
-        : 'Generated';
-      report.firestoreSaved = regResult.details?.firestoreSaved ?? true;
-      report.backendRegistered = regResult.details?.backendRegistered ?? true;
-      console.log('4. FCM Token: GENERATED SUCCESS, Preview:', report.tokenPreview);
+    if (report.permission === 'granted') {
+      const regResult = await requestFCMToken(userId, email);
+      if (regResult.success && regResult.token) {
+        report.fcmTokenGenerated = true;
+        const rawToken = regResult.token;
+        report.tokenPreview = rawToken.length > 16 
+          ? `${rawToken.substring(0, 8)}...${rawToken.substring(rawToken.length - 6)}` 
+          : 'Generated';
+        report.firestoreSaved = regResult.details?.firestoreSaved ?? true;
+        report.backendRegistered = regResult.details?.backendRegistered ?? true;
+        console.log('4. FCM Token: GENERATED SUCCESS, Preview:', report.tokenPreview);
+      } else {
+        report.error = regResult.error;
+        report.stepFailed = regResult.step || 'getToken';
+        console.warn('4. FCM Token Generation Notice:', regResult.error);
+      }
     } else {
-      report.error = regResult.error;
-      report.stepFailed = regResult.step || 'getToken';
-      console.error('4. FCM Token Generation FAILED:', regResult.error);
+      const permMsg = report.permission === 'denied'
+        ? 'Notifications are blocked in browser settings. Please allow notifications in site settings or open the app in a new tab.'
+        : 'Notification permission has not been granted yet.';
+      report.error = permMsg;
+      report.stepFailed = 'browser-permission';
+      console.warn('4. FCM Token Generation: Skipped (' + permMsg + ')');
     }
 
     // 5. Server Backend & IAM Diagnostics Check
