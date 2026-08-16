@@ -618,7 +618,12 @@ async function startServer() {
           if (probeErr.message?.includes('cloudmessaging.messages.create') || probeErr.code === 'messaging/mismatched-credential') {
             fcmHttpApiStatus = 'iam_permission_missing';
             iamDiagnosticMessage = `Service account "${saInfo?.client_email}" requires the IAM permission "cloudmessaging.messages.create" (Role: "roles/firebasecloudmessaging.admin") on project "${saInfo?.project_id || 'laxmi-artworks'}".`;
-          } else if (probeErr.code === 'messaging/invalid-registration-token' || probeErr.code === 'messaging/registration-token-not-registered' || probeErr.code === 'messaging/argument-error') {
+          } else if (
+            probeErr.code === 'messaging/invalid-registration-token' ||
+            probeErr.code === 'messaging/registration-token-not-registered' ||
+            probeErr.code === 'messaging/argument-error' ||
+            probeErr.code === 'messaging/invalid-argument'
+          ) {
             // If the probe reached token validation, FCM API & IAM are authorized!
             fcmHttpApiStatus = 'fcm_api_authorized_and_ready';
           }
