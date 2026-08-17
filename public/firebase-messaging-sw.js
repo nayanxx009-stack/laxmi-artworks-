@@ -38,7 +38,7 @@ function notifyClients(type, data) {
 const messaging = firebase.messaging();
 
 messaging.onBackgroundMessage((payload) => {
-  console.log('[firebase-messaging-sw.js] Received background message:', payload);
+  console.log('[FCM-SW] BACKGROUND MESSAGE RECEIVED', payload);
   notifyClients('BACKGROUND_MESSAGE_RECEIVED', payload);
 
   const notificationTitle = payload.notification?.title || payload.data?.title || 'Laxmi Artworks';
@@ -49,16 +49,16 @@ messaging.onBackgroundMessage((payload) => {
     tag: payload.data?.tag || ('laxmi-push-' + Date.now()),
     renotify: true,
     data: {
-      url: payload.data?.url || payload.fcmOptions?.link || '/'
+      url: payload.data?.url || payload.data?.click_action || payload.fcmOptions?.link || '/'
     }
   };
 
-  // Display system notification in background
+  console.log('[FCM-SW] SHOWING NOTIFICATION', notificationTitle);
   return self.registration.showNotification(notificationTitle, notificationOptions).then(() => {
-    console.log('[firebase-messaging-sw.js] Notification displayed successfully:', notificationTitle);
+    console.log('[FCM-SW] NOTIFICATION DISPLAYED', notificationTitle);
     notifyClients('NOTIFICATION_DISPLAY_ATTEMPTED', { success: true, title: notificationTitle });
   }).catch((err) => {
-    console.error('[firebase-messaging-sw.js] Error displaying notification:', err);
+    console.error('[FCM-SW] NOTIFICATION DISPLAY ERROR', err);
     notifyClients('NOTIFICATION_DISPLAY_ATTEMPTED', { success: false, error: err.message });
   });
 });

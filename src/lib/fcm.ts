@@ -133,6 +133,11 @@ export const requestFCMToken = async (userId: string, email: string): Promise<FC
     let registration: ServiceWorkerRegistration;
     try {
       registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js', { scope: '/' });
+      try {
+        await registration.update();
+      } catch (upErr) {
+        // Non-blocking update check
+      }
       const readyReg = await navigator.serviceWorker.ready;
       if (readyReg) {
         registration = readyReg;

@@ -157,7 +157,7 @@ export default function AdminBroadcast() {
       if (res.ok && data.success) {
         const msgId = data.messageId || 'FCM-ACCEPTED';
         const tokenPreview = data.tokenPreview || (myToken.substring(0, 8) + '...' + myToken.substring(myToken.length - 6));
-        alert(`Stage A: FCM_SEND_ACCEPTED\n\n• Firebase Message ID: ${msgId}\n• Target Token Match: ${tokenPreview}\n• Status: Firebase Admin SDK accepted the message.\n\n📌 Android Background Note:\nTo see the notification in the Android system tray, minimize or background Chrome before or immediately after sending.`);
+        alert(`FCM Message Accepted\n\n• Firebase Message ID: ${msgId}\n• Target FCM Token: ${tokenPreview}\n• Status: Firebase Admin SDK accepted the message for delivery.`);
       } else {
         alert(`❌ Test push failed: ${data.error || 'Server error'} (Code: ${data.code || 'FCM_ERROR'})`);
       }
@@ -384,10 +384,10 @@ export default function AdminBroadcast() {
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
-              <Wrench className="text-amber-400" size={16} /> Production FCM 4-Stage Diagnostics
+              <Wrench className="text-amber-400" size={16} /> FCM Setup & Worker Diagnostics
             </h3>
             <p className="text-xs text-neutral-400 mt-0.5">
-              Distinguishes FCM Gateway acceptance, Service Worker registration, background receipt, and notification display.
+              Verifies browser permissions, service worker readiness, VAPID key, and token registration.
             </p>
           </div>
           <button
@@ -397,49 +397,14 @@ export default function AdminBroadcast() {
             className="px-4 py-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-400 hover:bg-amber-500/20 text-xs font-bold transition-all flex items-center justify-center gap-2 disabled:opacity-50"
           >
             {diagRunning ? <RefreshCw className="animate-spin" size={14} /> : <Wrench size={14} />}
-            {diagRunning ? 'Testing 4 Stages...' : 'Run FCM Diagnostics'}
+            {diagRunning ? 'Checking Diagnostics...' : 'Run Diagnostics'}
           </button>
         </div>
 
         {diagReport && (
           <div className="p-4 bg-black/40 border border-white/10 rounded-2xl space-y-4 text-xs">
-            {/* 4 Delivery Pipeline Stages */}
-            <div className="space-y-2">
-              <h4 className="text-[11px] font-bold uppercase tracking-wider text-neutral-400">Delivery Pipeline Status</h4>
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2.5">
-                <div className="p-3 bg-neutral-900 border border-white/5 rounded-xl">
-                  <span className="text-neutral-500 text-[10px] uppercase font-bold block">Stage A</span>
-                  <span className="font-bold text-white block mt-0.5">FCM Gateway API</span>
-                  <span className={`text-[11px] font-semibold ${diagReport.fcmSendAccepted ? 'text-green-400' : 'text-amber-400'}`}>
-                    {diagReport.fcmSendAccepted ? 'FCM_SEND_ACCEPTED ✓' : 'Checking/Pending'}
-                  </span>
-                </div>
-                <div className="p-3 bg-neutral-900 border border-white/5 rounded-xl">
-                  <span className="text-neutral-500 text-[10px] uppercase font-bold block">Stage B</span>
-                  <span className="font-bold text-white block mt-0.5">Service Worker</span>
-                  <span className={`text-[11px] font-semibold ${diagReport.serviceWorkerRegistered ? 'text-green-400' : 'text-red-400'}`}>
-                    {diagReport.serviceWorkerRegistered ? 'SERVICE_WORKER_REGISTERED ✓' : 'Failed ✕'}
-                  </span>
-                </div>
-                <div className="p-3 bg-neutral-900 border border-white/5 rounded-xl">
-                  <span className="text-neutral-500 text-[10px] uppercase font-bold block">Stage C</span>
-                  <span className="font-bold text-white block mt-0.5">Background Handler</span>
-                  <span className={`text-[11px] font-semibold ${swEvents.bgReceived ? 'text-green-400' : 'text-neutral-400'}`}>
-                    {swEvents.bgReceived ? 'MESSAGE_RECEIVED ✓' : 'Awaiting Test Event'}
-                  </span>
-                </div>
-                <div className="p-3 bg-neutral-900 border border-white/5 rounded-xl">
-                  <span className="text-neutral-500 text-[10px] uppercase font-bold block">Stage D</span>
-                  <span className="font-bold text-white block mt-0.5">Notification Display</span>
-                  <span className={`text-[11px] font-semibold ${swEvents.displayAttempted ? 'text-green-400' : 'text-neutral-400'}`}>
-                    {swEvents.displayAttempted ? 'DISPLAY_ATTEMPTED ✓' : 'Awaiting Test Event'}
-                  </span>
-                </div>
-              </div>
-            </div>
-
             {/* Core Diagnostics Grid */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 pt-2 border-t border-white/5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2.5">
               <div className="p-2.5 bg-neutral-900 border border-white/5 rounded-xl">
                 <span className="text-neutral-500 text-[10px] uppercase font-bold block">Browser Permission</span>
                 <span className={`font-bold ${diagReport.permission === 'granted' ? 'text-green-400' : 'text-amber-400'}`}>
@@ -447,13 +412,19 @@ export default function AdminBroadcast() {
                 </span>
               </div>
               <div className="p-2.5 bg-neutral-900 border border-white/5 rounded-xl">
-                <span className="text-neutral-500 text-[10px] uppercase font-bold block">VAPID Public Key</span>
-                <span className={`font-bold ${diagReport.vapidKeyDetected ? 'text-green-400' : 'text-amber-400'}`}>
-                  {diagReport.vapidKeyDetected ? `Detected (${diagReport.vapidSource}) ✓` : 'Not Found ✕'}
+                <span className="text-neutral-500 text-[10px] uppercase font-bold block">Service Worker</span>
+                <span className={`font-bold ${diagReport.serviceWorkerRegistered ? 'text-green-400' : 'text-red-400'}`}>
+                  {diagReport.serviceWorkerRegistered ? 'Active (/firebase-messaging-sw.js)' : 'Not Found'}
                 </span>
               </div>
               <div className="p-2.5 bg-neutral-900 border border-white/5 rounded-xl">
-                <span className="text-neutral-500 text-[10px] uppercase font-bold block">Target FCM Token</span>
+                <span className="text-neutral-500 text-[10px] uppercase font-bold block">VAPID Public Key</span>
+                <span className={`font-bold ${diagReport.vapidKeyDetected ? 'text-green-400' : 'text-amber-400'}`}>
+                  {diagReport.vapidKeyDetected ? 'Configured ✓' : 'Not Found ✕'}
+                </span>
+              </div>
+              <div className="p-2.5 bg-neutral-900 border border-white/5 rounded-xl">
+                <span className="text-neutral-500 text-[10px] uppercase font-bold block">Active FCM Token</span>
                 <span className={`font-mono text-[11px] ${diagReport.fcmTokenGenerated ? 'text-green-400' : 'text-red-400'}`}>
                   {diagReport.tokenPreview || 'Not Generated'}
                 </span>
