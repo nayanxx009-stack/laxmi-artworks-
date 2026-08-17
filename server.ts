@@ -669,16 +669,43 @@ async function startServer() {
 
   // Send Push Notification via FCM
   app.post("/api/send-push", async (req, res) => {
-    const { token, title, body, url, userId } = req.body;
+    const { token, title, body, url, userId, diagnosticId } = req.body;
+    const resolvedDiagId = String(diagnosticId || req.body.data?.diagnosticId || '');
     const safeTokenPreview = token ? `${token.substring(0, 8)}...${token.substring(token.length - 6)}` : 'none';
-    console.log(`[Push API] Attempting to send push to token: ${safeTokenPreview}`);
+    console.log(`[Push API] Attempting to send push to token: ${safeTokenPreview} | diagId: ${resolvedDiagId || 'none'}`);
+    
+    let saInfo: any = null;
+    if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
+      try {
+        saInfo = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
+      } catch (e) {}
+    }
+    const adminSdkProjectId = saInfo?.project_id || "laxmi-artworks";
+    const serviceAccountEmail = saInfo?.client_email || "Application Default Credentials";
+
     if (!getApps().length) {
       console.error('[Push API] Firebase Admin not configured.');
-      return res.status(500).json({ error: 'Firebase Admin not configured' });
+      return res.status(500).json({
+        success: false,
+        status: 'REQUEST_FAILED',
+        error: 'Firebase Admin not configured',
+        adminSdkProjectId,
+        serviceAccountEmail,
+        targetToken: token || '',
+        tokenPreview: safeTokenPreview,
+        diagnosticId: resolvedDiagId
+      });
     }
     if (!token) {
       console.error('[Push API] Missing token.');
-      return res.status(400).json({ error: 'Missing token' });
+      return res.status(400).json({
+        success: false,
+        status: 'REQUEST_FAILED',
+        error: 'Missing target FCM token',
+        adminSdkProjectId,
+        serviceAccountEmail,
+        diagnosticId: resolvedDiagId
+      });
     }
     try {
       const message: any = {
@@ -688,6 +715,7 @@ async function startServer() {
           body: String(body || '')
         },
         data: {
+          diagnosticId: resolvedDiagId,
           title: String(title || 'Laxmi Artworks'),
           body: String(body || ''),
           url: String(url || '/'),
@@ -711,12 +739,21 @@ async function startServer() {
         }
       };
       const response = await getMessaging().send(message);
-      console.log(`[Push API] Successfully sent message to ${safeTokenPreview} | messageId: ${response}`);
-      res.json({ success: true, messageId: response, tokenPreview: safeTokenPreview });
+      console.log(`[Push API] Successfully sent message to ${safeTokenPreview} | messageId: ${response} | diagId: ${resolvedDiagId}`);
+      res.json({
+        success: true,
+        status: 'REQUEST_ACCEPTED',
+        messageId: response,
+        diagnosticId: resolvedDiagId,
+        targetToken: token,
+        tokenPreview: safeTokenPreview,
+        adminSdkProjectId,
+        serviceAccountEmail
+      });
     } catch (err: any) {
       console.error(`[Push API] FCM Error for ${safeTokenPreview}:`, err.message, '| Code:', err.code);
       
-      // Remove invalid token from Firestore
+      // Remove invalid token from Firestore if permanently invalid
       if (err.code === 'messaging/invalid-registration-token' || 
           err.code === 'messaging/registration-token-not-registered') {
         console.log(`[Push API] Token is invalid or expired. Removing token: ${safeTokenPreview}`);
@@ -737,7 +774,17 @@ async function startServer() {
         }
       }
       
-      res.status(500).json({ error: err.message, code: err.code, tokenPreview: safeTokenPreview });
+      res.status(500).json({
+        success: false,
+        status: 'REQUEST_FAILED',
+        error: err.message,
+        code: err.code || 'FCM_ERROR',
+        diagnosticId: resolvedDiagId,
+        targetToken: token,
+        tokenPreview: safeTokenPreview,
+        adminSdkProjectId,
+        serviceAccountEmail
+      });
     }
   });
 

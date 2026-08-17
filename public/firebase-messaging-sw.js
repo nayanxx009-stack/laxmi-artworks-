@@ -22,15 +22,16 @@ self.addEventListener('activate', (event) => {
 
 const swBroadcastChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('laxmi_fcm_sw_channel') : null;
 
-function notifyClients(type, data) {
+function notifyClients(type, payloadData) {
+  const messageData = { type, ...payloadData, timestamp: Date.now() };
   try {
     if (swBroadcastChannel) {
-      swBroadcastChannel.postMessage({ type, data, timestamp: Date.now() });
+      swBroadcastChannel.postMessage(messageData);
     }
   } catch (e) {}
   self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
     windowClients.forEach(client => {
-      client.postMessage({ type, data, timestamp: Date.now() });
+      client.postMessage(messageData);
     });
   }).catch(() => {});
 }
@@ -38,8 +39,15 @@ function notifyClients(type, data) {
 const messaging = firebase.messaging();
 
 messaging.onBackgroundMessage((payload) => {
-  console.log('[FCM-SW] BACKGROUND MESSAGE RECEIVED', payload);
-  notifyClients('BACKGROUND_MESSAGE_RECEIVED', payload);
+  const diagnosticId = payload.data?.diagnosticId || payload.diagnosticId || '';
+  console.log('[FCM-SW] BACKGROUND MESSAGE RECEIVED', { diagnosticId, payload });
+  
+  // Notify client apps that SW received message
+  notifyClients('FCM_SW_MESSAGE_RECEIVED', {
+    diagnosticId,
+    payload,
+    title: payload.notification?.title || payload.data?.title || 'Laxmi Artworks'
+  });
 
   const notificationTitle = payload.notification?.title || payload.data?.title || 'Laxmi Artworks';
   const origin = (self.location && self.location.origin) ? self.location.origin : '';
@@ -50,20 +58,30 @@ messaging.onBackgroundMessage((payload) => {
     body: payload.notification?.body || payload.data?.body || 'You have a new update from Laxmi Artworks',
     icon: payload.notification?.icon || payload.data?.icon || defaultIcon,
     badge: payload.notification?.badge || payload.data?.badge || defaultBadge,
-    tag: payload.data?.tag || ('laxmi-push-' + Date.now()),
+    tag: payload.data?.tag || ('laxmi-push-' + (diagnosticId || Date.now())),
     renotify: true,
     data: {
+      diagnosticId,
       url: payload.data?.url || payload.data?.click_action || payload.fcmOptions?.link || '/'
     }
   };
 
-  console.log('[FCM-SW] SHOWING NOTIFICATION', notificationTitle);
+  console.log('[FCM-SW] SHOWING NOTIFICATION', { diagnosticId, notificationTitle });
   return self.registration.showNotification(notificationTitle, notificationOptions).then(() => {
-    console.log('[FCM-SW] NOTIFICATION DISPLAYED', notificationTitle);
-    notifyClients('NOTIFICATION_DISPLAY_ATTEMPTED', { success: true, title: notificationTitle });
+    console.log('[FCM-SW] NOTIFICATION DISPLAYED', { diagnosticId, notificationTitle });
+    notifyClients('FCM_SW_NOTIFICATION_SHOWN', {
+      diagnosticId,
+      title: notificationTitle,
+      success: true
+    });
   }).catch((err) => {
-    console.error('[FCM-SW] NOTIFICATION DISPLAY ERROR', err);
-    notifyClients('NOTIFICATION_DISPLAY_ATTEMPTED', { success: false, error: err.message });
+    console.error('[FCM-SW] NOTIFICATION DISPLAY ERROR', { diagnosticId, error: err.message });
+    notifyClients('FCM_SW_NOTIFICATION_SHOWN', {
+      diagnosticId,
+      title: notificationTitle,
+      success: false,
+      error: err.message
+    });
   });
 });
 

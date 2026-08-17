@@ -1,4 +1,4 @@
-import { getToken, onMessage } from "firebase/messaging";
+import { getToken, deleteToken, onMessage } from "firebase/messaging";
 import { getMessagingInstance, db } from "./firebase";
 import { doc, setDoc, getDoc, deleteDoc } from "firebase/firestore";
 
@@ -272,13 +272,15 @@ export const requestFCMToken = async (userId: string, email: string): Promise<FC
 
     // Save token registered state locally
     localStorage.setItem('fcm_token_registered', 'true');
+    localStorage.setItem('fcm_last_token', token);
+    localStorage.setItem('fcm_token_created_at', String(now));
     console.log("[FCM] Final status = SUCCESS");
 
     return { 
       success: true, 
       token, 
       step: 'complete',
-      details: { firestoreSaved: fsSuccess, backendRegistered: serverSuccess } 
+      details: { firestoreSaved: fsSuccess, backendRegistered: serverSuccess, createdAt: now } 
     };
   } catch (err: any) {
     console.error("[FCM] Final status = FAILED:", err);
@@ -286,16 +288,59 @@ export const requestFCMToken = async (userId: string, email: string): Promise<FC
   }
 };
 
+export const regenerateFCMToken = async (userId: string, email: string): Promise<FCMRegistrationResult> => {
+  console.log('[FCM] Starting clean token regeneration...');
+  try {
+    const messaging = await getMessagingInstance();
+    if (messaging) {
+      try {
+        await deleteToken(messaging);
+        console.log('[FCM] Previous token deleted from Firebase client');
+      } catch (delErr) {
+        console.warn('[FCM] deleteToken notice:', delErr);
+      }
+    }
+    
+    localStorage.removeItem('fcm_token_registered');
+    localStorage.removeItem('fcm_last_token');
+    localStorage.removeItem('fcm_token_created_at');
+
+    if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+      try {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        for (const reg of regs) {
+          if (reg.active?.scriptURL.includes('firebase-messaging-sw') || reg.scope.includes('/')) {
+            await reg.update();
+          }
+        }
+      } catch (swErr) {
+        console.warn('[FCM] SW update notice:', swErr);
+      }
+    }
+
+    return await requestFCMToken(userId, email);
+  } catch (err: any) {
+    console.error('[FCM] Error regenerating token:', err);
+    return { success: false, error: err.message || 'Failed to regenerate token' };
+  }
+};
+
 export interface FCMDiagnosticReport {
-  permission: NotificationPermission | 'unsupported';
-  vapidKeyDetected: boolean;
-  vapidSource?: string;
+  origin: string;
+  swControllerScriptURL: string | null;
   serviceWorkerRegistered: boolean;
   serviceWorkerScope?: string;
+  serviceWorkerActiveScriptURL?: string;
   serviceWorkerControlling: boolean;
+  permission: NotificationPermission | 'unsupported';
   fcmTokenGenerated: boolean;
+  currentToken?: string;
   tokenPreview?: string;
-  tokenHash?: string;
+  tokenCreatedAt?: string;
+  projectId: string;
+  messagingSenderId: string;
+  vapidKeyDetected: boolean;
+  vapidSource?: string;
   firestoreSaved: boolean;
   backendRegistered: boolean;
   serverTargetProjectId?: string;
@@ -305,9 +350,6 @@ export interface FCMDiagnosticReport {
   serverFcmHttpApiStatus?: string;
   serverIamDiagnosticMessage?: string;
   fcmSendAccepted?: boolean;
-  fcmProbeMessageId?: string;
-  backgroundMessageReceived?: boolean;
-  notificationDisplayAttempted?: boolean;
   error?: string;
   stepFailed?: string;
 }
@@ -316,12 +358,21 @@ export const runFCMDiagnostics = async (
   userId = 'diag_user',
   email = 'diagnostic@laxmiartworks.local'
 ): Promise<FCMDiagnosticReport> => {
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const swControllerScript = typeof navigator !== 'undefined' && navigator.serviceWorker?.controller
+    ? navigator.serviceWorker.controller.scriptURL
+    : null;
+
   const report: FCMDiagnosticReport = {
+    origin,
+    swControllerScriptURL: swControllerScript,
     permission: typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'unsupported',
     vapidKeyDetected: false,
     serviceWorkerRegistered: false,
-    serviceWorkerControlling: false,
+    serviceWorkerControlling: !!swControllerScript,
     fcmTokenGenerated: false,
+    projectId: "laxmi-artworks",
+    messagingSenderId: "598865578283",
     firestoreSaved: false,
     backendRegistered: false,
     fcmSendAccepted: false
@@ -345,10 +396,13 @@ export const runFCMDiagnostics = async (
       try {
         const reg = await navigator.serviceWorker.register('/firebase-messaging-sw.js', { scope: '/' });
         const readyReg = await navigator.serviceWorker.ready;
-        report.serviceWorkerRegistered = !!(reg || readyReg);
-        report.serviceWorkerScope = (readyReg || reg).scope;
+        const activeReg = readyReg || reg;
+        report.serviceWorkerRegistered = !!activeReg;
+        report.serviceWorkerScope = activeReg?.scope;
+        report.serviceWorkerActiveScriptURL = activeReg?.active?.scriptURL || activeReg?.installing?.scriptURL || activeReg?.waiting?.scriptURL;
         report.serviceWorkerControlling = !!navigator.serviceWorker.controller;
-        console.log('2. Service Worker: Registered at scope', report.serviceWorkerScope, '| Controlling:', report.serviceWorkerControlling);
+        report.swControllerScriptURL = navigator.serviceWorker.controller?.scriptURL || null;
+        console.log('2. Service Worker: Scope:', report.serviceWorkerScope, '| Active Script:', report.serviceWorkerActiveScriptURL, '| Controller:', report.swControllerScriptURL);
       } catch (swErr: any) {
         console.error('2. Service Worker Registration FAILED:', swErr);
         report.error = 'Service Worker Registration Failed: ' + swErr.message;
@@ -370,24 +424,42 @@ export const runFCMDiagnostics = async (
       console.warn('3. VAPID Key: NOT DETECTED (Push subscription may fail if certificate is required)');
     }
 
-    // 4. Token Generation Check
+    // 4. Token Retrieval Check
+    const savedToken = localStorage.getItem('fcm_last_token');
+    const tokenTime = localStorage.getItem('fcm_token_created_at');
+    if (tokenTime) {
+      report.tokenCreatedAt = new Date(parseInt(tokenTime, 10)).toLocaleString();
+    }
+
     if (report.permission === 'granted') {
       const regResult = await requestFCMToken(userId, email);
       if (regResult.success && regResult.token) {
         report.fcmTokenGenerated = true;
+        report.currentToken = regResult.token;
         const rawToken = regResult.token;
         report.tokenPreview = rawToken.length > 16 
           ? `${rawToken.substring(0, 8)}...${rawToken.substring(rawToken.length - 6)}` 
-          : 'Generated';
+          : rawToken;
         report.firestoreSaved = regResult.details?.firestoreSaved ?? true;
         report.backendRegistered = regResult.details?.backendRegistered ?? true;
+        if (regResult.details?.createdAt) {
+          report.tokenCreatedAt = new Date(regResult.details.createdAt).toLocaleString();
+        }
         console.log('4. FCM Token: GENERATED SUCCESS, Preview:', report.tokenPreview);
       } else {
         report.error = regResult.error;
         report.stepFailed = regResult.step || 'getToken';
+        if (savedToken) {
+          report.currentToken = savedToken;
+          report.tokenPreview = `${savedToken.substring(0, 8)}...${savedToken.substring(savedToken.length - 6)}`;
+        }
         console.warn('4. FCM Token Generation Notice:', regResult.error);
       }
     } else {
+      if (savedToken) {
+        report.currentToken = savedToken;
+        report.tokenPreview = `${savedToken.substring(0, 8)}...${savedToken.substring(savedToken.length - 6)}`;
+      }
       const permMsg = report.permission === 'denied'
         ? 'Notifications are blocked in browser settings. Please allow notifications in site settings or open the app in a new tab.'
         : 'Notification permission has not been granted yet.';
