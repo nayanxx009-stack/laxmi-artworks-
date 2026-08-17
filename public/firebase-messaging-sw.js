@@ -42,10 +42,14 @@ messaging.onBackgroundMessage((payload) => {
   notifyClients('BACKGROUND_MESSAGE_RECEIVED', payload);
 
   const notificationTitle = payload.notification?.title || payload.data?.title || 'Laxmi Artworks';
+  const origin = (self.location && self.location.origin) ? self.location.origin : '';
+  const defaultIcon = origin ? (origin + '/icon-192.png') : '/icon-192.png';
+  const defaultBadge = origin ? (origin + '/icon-192.png') : '/icon-192.png';
+
   const notificationOptions = {
     body: payload.notification?.body || payload.data?.body || 'You have a new update from Laxmi Artworks',
-    icon: payload.notification?.icon || payload.data?.icon || '/icon-192.png',
-    badge: payload.notification?.badge || payload.data?.badge || '/icon-192.png',
+    icon: payload.notification?.icon || payload.data?.icon || defaultIcon,
+    badge: payload.notification?.badge || payload.data?.badge || defaultBadge,
     tag: payload.data?.tag || ('laxmi-push-' + Date.now()),
     renotify: true,
     data: {
