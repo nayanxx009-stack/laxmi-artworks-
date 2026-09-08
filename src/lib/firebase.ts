@@ -1,8 +1,13 @@
-import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, setPersistence, browserLocalPersistence } from 'firebase/auth';
-import { initializeFirestore, getFirestore } from 'firebase/firestore';
+import { initializeApp, getApps, getApp } from 'firebase/app';
+import { getAuth, GoogleAuthProvider } from 'firebase/auth';
+import { 
+  initializeFirestore, 
+  getFirestore, 
+  persistentLocalCache, 
+  persistentMultipleTabManager 
+} from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
-import { getMessaging, getToken, onMessage, isSupported } from 'firebase/messaging';
+import { getMessaging, isSupported } from 'firebase/messaging';
 
 const firebaseConfig = {
   "projectId": "laxmi-artworks",
@@ -17,13 +22,26 @@ const firebaseConfig = {
   "recaptchaSiteKey": ""
 };
 
-const app = initializeApp(firebaseConfig);
+const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+// Configure Firestore with auto-detect long polling and persistent multi-tab cache to prevent [code=unavailable] connection drops
+let firestoreInstance;
+try {
+  firestoreInstance = initializeFirestore(app, {
+    experimentalAutoDetectLongPolling: true,
+    localCache: persistentLocalCache({
+      tabManager: persistentMultipleTabManager()
+    })
+  }, firebaseConfig.firestoreDatabaseId);
+} catch (e) {
+  firestoreInstance = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+}
+
+export const db = firestoreInstance;
 export const auth = getAuth(app);
-const adminApp = initializeApp(firebaseConfig, 'adminApp');
+const adminApp = getApps().find(a => a.name === 'adminApp') || initializeApp(firebaseConfig, 'adminApp');
 export const adminAuth = getAuth(adminApp);
-export const adminDb = getFirestore(adminApp, firebaseConfig.firestoreDatabaseId);
+export const adminDb = db;
 export const adminStorage = getStorage(adminApp);
 export const storage = getStorage(app);
 

@@ -139,7 +139,11 @@ async function verifyPaymentsBackground() {
              
              if (parsed.subject?.includes('New Commission Inquiry')) continue;
              
-             if (fullText.includes(pay.orderId.toUpperCase()) || (pay.manualUTR && fullText.includes(pay.manualUTR))) {
+             if (
+               fullText.includes(pay.orderId.toUpperCase()) || 
+               (pay.artCode && fullText.includes(pay.artCode.toUpperCase())) || 
+               (pay.manualUTR && fullText.includes(pay.manualUTR))
+             ) {
                matchingEmails.push(parsed);
              }
           }
@@ -156,17 +160,20 @@ async function verifyPaymentsBackground() {
                 
                 await updateDoc(doc(db, 'payments', pay.id), {
                   verificationStatus: 'Paid',
+                  paymentStatus: 'PAYMENT_VERIFIED',
                   transactionId: utr || pay.manualUTR || parsed.messageId || 'IMAP-VERIFIED',
                   verificationNote: `Auto Verified (IMAP) - Sender: ${parsed.from?.text || 'Unknown'}`
                 });
 
                 const orderData = {
                   orderId: pay.orderId,
-                  userId: pay.formData.userId || 'guest',
-                  name: pay.formData.name || 'Unknown',
-                  email: pay.formData.email || 'unknown@example.com',
-                  phone: pay.formData.phone || '0000000000',
-                  message: pay.formData.message || '',
+                  artCode: pay.artCode || pay.orderId,
+                  paymentId: pay.paymentId || pay.id,
+                  userId: pay.formData?.userId || 'guest',
+                  name: pay.formData?.name || 'Unknown',
+                  email: pay.formData?.email || 'unknown@example.com',
+                  phone: pay.formData?.phone || '0000000000',
+                  message: pay.formData?.message || '',
                   amount: pay.amount,
                   paymentStatus: 'Paid',
                   status: 'Drafting & Concept',
@@ -177,11 +184,13 @@ async function verifyPaymentsBackground() {
                 await setDoc(doc(db, 'orders', pay.orderId), orderData);
 
                 await updateDoc(doc(db, 'payments', pay.id), {
-                  verificationStatus: 'Order Confirmed'
+                  verificationStatus: 'Order Confirmed',
+                  paymentStatus: 'ORDER_ACCEPTED'
                 });
              } else {
                 await updateDoc(doc(db, 'payments', pay.id), {
                   verificationStatus: 'Failed',
+                  paymentStatus: 'PAYMENT_FAILED',
                   verificationNote: `Email found but amount mismatch (Expected: ${pay.amount})`
                 });
              }
@@ -230,6 +239,15 @@ async function startServer() {
 
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok" });
+  });
+
+  app.post("/api/verify-payment-now", async (req, res) => {
+    try {
+      verifyPaymentsBackground().catch(console.error);
+      res.json({ success: true, message: "Payment verification scan initiated" });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
   });
 
   // Helper to send push to user across multi-device tokens and legacy tokens
