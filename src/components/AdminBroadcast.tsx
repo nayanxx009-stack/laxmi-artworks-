@@ -490,11 +490,13 @@ ${JSON.stringify(reportData, null, 2)}
       const data = await res.json();
 
       if (res.ok && data.success) {
+        const successCount = data.response?.successCount ?? (targetType === 'topic' ? 1 : payload.tokens?.length);
+        const failureCount = data.response?.failureCount ?? 0;
         setBroadcastResult({
           success: true,
           message: targetType === 'topic' 
-            ? 'Broadcast accepted for FCM Topic ("all_users")!' 
-            : `Broadcast accepted for ${data.response?.successCount || payload.tokens?.length || 0} registered devices!`,
+            ? '✅ Broadcast accepted for FCM Topic ("all_users")!' 
+            : `✅ Broadcast completed: ${successCount} succeeded, ${failureCount} failed (${payload.tokens?.length || 0} total target devices)`,
           details: data.response
         });
         setTitle('');
@@ -584,14 +586,15 @@ ${JSON.stringify(reportData, null, 2)}
           <div className="flex flex-wrap items-center justify-between gap-3 bg-neutral-900 border border-white/10 p-4 rounded-2xl">
             <div className="flex flex-wrap items-center gap-2.5">
               <button
-                id="btn-run-delivery-probe"
+                id="btn-send-test-to-myself"
                 type="button"
                 onClick={handleRunDeliveryDiagnostic}
                 disabled={probeSending || diagRunning}
                 className="px-5 py-2.5 rounded-xl bg-amber-500 text-black font-bold text-xs hover:bg-amber-400 transition-all flex items-center gap-2 shadow-lg shadow-amber-500/20 disabled:opacity-50"
+                title="Dispatches a real push notification to your device via backend Firebase Admin SDK"
               >
                 {probeSending ? <RefreshCw className="animate-spin" size={14} /> : <Zap size={14} />}
-                {probeSending ? 'Dispatching Test Probe...' : 'Send Runtime Delivery Diagnostic Probe'}
+                {probeSending ? 'Sending Test Push via Admin SDK...' : 'Send Test Notification to Myself'}
               </button>
 
               <button

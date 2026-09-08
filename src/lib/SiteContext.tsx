@@ -9,6 +9,7 @@ export interface SiteConfig {
   popupButtonText?: string;
   popupButtonUrl?: string;
   popupImage?: string;
+  imageUrl?: string;
   popupAutoClose?: number;
   popupFrequency?: string;
   announcementBanner: string;
@@ -34,16 +35,42 @@ export const SiteProvider = ({ children }: { children: ReactNode }) => {
   const [config, setConfig] = useState<SiteConfig>(defaultSiteConfig);
 
   useEffect(() => {
-    const unsub = onSnapshot(doc(db, 'settings', 'site_config'), (docSnap) => {
+    // 1. Listen to site_config
+    const unsubSite = onSnapshot(doc(db, 'settings', 'site_config'), (docSnap) => {
       if (docSnap.exists()) {
-        setConfig({ ...defaultSiteConfig, ...docSnap.data() } as SiteConfig);
+        const data = docSnap.data();
+        setConfig(prev => ({
+          ...prev,
+          ...data,
+          popupImage: data.imageUrl || data.popupImage || prev.popupImage
+        } as SiteConfig));
       }
     }, (error) => {
       if (error.code !== 'unavailable' && !error.message?.includes('offline')) {
         console.error("Failed to load site config via snapshot:", error);
       }
     });
-    return () => unsub();
+
+    // 2. Listen to canonical popup config
+    const unsubPopup = onSnapshot(doc(db, 'settings', 'popup'), (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        setConfig(prev => ({
+          ...prev,
+          popupEnabled: data.enabled !== undefined ? Boolean(data.enabled) : prev.popupEnabled,
+          popupFrequency: data.frequency || prev.popupFrequency,
+          popupImage: data.imageUrl || data.popupImage || prev.popupImage,
+          imageUrl: data.imageUrl || data.popupImage || prev.imageUrl
+        }));
+      }
+    }, (error) => {
+      // Non-blocking fallback
+    });
+
+    return () => {
+      unsubSite();
+      unsubPopup();
+    };
   }, []);
 
   return (

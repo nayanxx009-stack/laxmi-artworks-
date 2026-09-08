@@ -297,7 +297,24 @@ async function startServer() {
         const response = await getMessaging().sendEachForMulticast({
           tokens: tokenList,
           notification: { title, body },
-          data: { url: url || '/' }
+          data: {
+            title,
+            body,
+            url: url || '/',
+            click_action: url || '/'
+          },
+          webpush: {
+            headers: { Urgency: 'high' },
+            notification: {
+              title,
+              body,
+              icon: '/icon-192.png',
+              badge: '/icon-192.png'
+            },
+            fcmOptions: {
+              link: url || '/'
+            }
+          }
         });
         console.log(`[Push Watcher] Success: ${response.successCount}, Failures: ${response.failureCount}`);
       } else {
@@ -596,6 +613,37 @@ async function startServer() {
     } catch (err: any) {
       console.error('[Admin FCM Stats] Error:', err.message);
       res.status(500).json({ error: err.message, count: 0, devices: [] });
+    }
+  });
+
+  // Save Popup Configuration (Canonical Firestore document settings/popup + settings/site_config)
+  app.post("/api/admin/save-popup-config", async (req, res) => {
+    const { enabled, frequency, imageUrl, userEmail } = req.body;
+    try {
+      const now = Date.now();
+      const popupPayload = {
+        enabled: Boolean(enabled),
+        frequency: frequency || 'session',
+        imageUrl: String(imageUrl || ''),
+        popupImage: String(imageUrl || ''),
+        updatedAt: now,
+        updatedBy: userEmail || 'admin'
+      };
+
+      await setDoc(doc(db, 'settings', 'popup'), popupPayload, { merge: true });
+      await setDoc(doc(db, 'settings', 'site_config'), {
+        popupEnabled: Boolean(enabled),
+        popupFrequency: frequency || 'session',
+        popupImage: String(imageUrl || ''),
+        imageUrl: String(imageUrl || ''),
+        updatedAt: now
+      }, { merge: true });
+
+      console.log(`[Admin Save Popup API] Popup settings saved successfully by ${userEmail || 'admin'}:`, popupPayload);
+      res.json({ success: true, savedAt: now });
+    } catch (err: any) {
+      console.error('[Admin Save Popup API] Error saving popup config:', err.message);
+      res.status(500).json({ success: false, error: err.message });
     }
   });
 
@@ -902,6 +950,32 @@ async function startServer() {
     } catch (err: any) {
       console.error('[Push API] FCM Broadcast Error:', err.message);
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Admin Save Popup Configuration Endpoint
+  app.post("/api/admin/save-popup-config", async (req, res) => {
+    const { enabled, frequency, imageUrl } = req.body;
+    try {
+      const payload = {
+        enabled: Boolean(enabled),
+        frequency: frequency || 'session',
+        imageUrl: String(imageUrl || '').trim(),
+        popupImage: String(imageUrl || '').trim(),
+        updatedAt: Date.now()
+      };
+      await setDoc(doc(db, 'settings', 'popup'), payload, { merge: true });
+      await setDoc(doc(db, 'settings', 'site_config'), {
+        popupEnabled: payload.enabled,
+        popupFrequency: payload.frequency,
+        popupImage: payload.imageUrl,
+        imageUrl: payload.imageUrl,
+        updatedAt: payload.updatedAt
+      }, { merge: true });
+      res.json({ success: true, savedAt: payload.updatedAt });
+    } catch (err: any) {
+      console.error('[Save Popup API] Error:', err.message);
+      res.status(500).json({ success: false, error: err.message });
     }
   });
   

@@ -113,6 +113,8 @@ export default function AdminPanel() {
   const [popupUploadMessage, setPopupUploadMessage] = useState('');
   const [showPopupPreview, setShowPopupPreview] = useState(false);
   const [savingSite, setSavingSite] = useState(false);
+  const [savingPopup, setSavingPopup] = useState(false);
+  const [popupSaveFeedback, setPopupSaveFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   const [adminsList, setAdminsList] = useState<{id: string, email: string, role?: string}[]>([]);
   const [newAdminEmail, setNewAdminEmail] = useState("");
@@ -128,6 +130,29 @@ export default function AdminPanel() {
   useEffect(() => {
     setLocalSiteConfig(siteConfig);
   }, [siteConfig]);
+
+  // Load canonical settings/popup when popup tab is opened
+  useEffect(() => {
+    if (activeTab !== 'popup') return;
+    const fetchCanonicalPopup = async () => {
+      try {
+        const pSnap = await getDoc(doc(db, 'settings', 'popup'));
+        if (pSnap.exists()) {
+          const pData = pSnap.data();
+          setLocalSiteConfig(prev => ({
+            ...prev,
+            popupEnabled: pData.enabled !== undefined ? Boolean(pData.enabled) : prev.popupEnabled,
+            popupFrequency: pData.frequency || prev.popupFrequency,
+            popupImage: pData.imageUrl || pData.popupImage || prev.popupImage,
+            imageUrl: pData.imageUrl || pData.popupImage || prev.imageUrl
+          }));
+        }
+      } catch (err) {
+        console.warn('Notice loading canonical settings/popup:', err);
+      }
+    };
+    fetchCanonicalPopup();
+  }, [activeTab]);
 
   useEffect(() => {
     let active = true;
@@ -357,68 +382,135 @@ export default function AdminPanel() {
     if (!e.target.files || e.target.files.length === 0) return;
     const file = e.target.files[0];
     
-    if (file.size > 15 * 1024 * 1024) {
-       setPopupUploadState('error');
-       setPopupUploadMessage('❌ File is too large. Please select a smaller image.');
-       setTimeout(() => { setPopupUploadState('idle'); setPopupUploadMessage(''); }, 5000);
-       return;
+    // 1. Validate file type
+    if (!file.type.startsWith('image/')) {
+      setPopupUploadState('error');
+      setPopupUploadMessage('❌ Invalid file type. Please select an image file (JPG, PNG, WebP).');
+      setTimeout(() => { setPopupUploadState('idle'); setPopupUploadMessage(''); }, 6000);
+      return;
+    }
+
+    // 2. Validate file size (max 10MB)
+    if (file.size > 10 * 1024 * 1024) {
+      setPopupUploadState('error');
+      setPopupUploadMessage('❌ File size exceeds 10MB limit. Please select a smaller image.');
+      setTimeout(() => { setPopupUploadState('idle'); setPopupUploadMessage(''); }, 6000);
+      return;
     }
     
     try {
-      setPopupUploadState('processing');
-      setPopupUploadMessage('Optimizing image...');
+      setPopupUploadState('uploading');
+      setPopupUploadMessage(`Uploading to Firebase Storage (${(file.size / (1024 * 1024)).toFixed(2)} MB)...`);
       
-      const processUpload = async () => {
-        setPopupUploadState('processing');
-        setPopupUploadMessage('📷 Reading & Optimizing image...');
-        // Compress extremely aggressively for base64 storage to avoid any issues
-        const base64Url = await compressImage(file, 400, 400, 0.4);
-        
-        const sizeInBytes = base64Url.length * 0.75;
-        if (sizeInBytes > 1000000) {
-            throw new Error('Image is too complex. Please try a smaller image.');
+      const sanitizedName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
+      const storageRef = ref(storage, `popups/${Date.now()}_${sanitizedName}`);
+      
+      // Upload to Firebase Storage
+      const uploadResult = await uploadBytes(storageRef, file, {
+        contentType: file.type,
+        customMetadata: {
+          uploadedBy: user?.email || 'admin',
+          originalName: file.name
         }
-        
-        setPopupUploadState('saving');
-        setPopupUploadMessage('💾 Saving popup to database...');
-        
-        const newConfig = { ...localSiteConfig, popupImage: base64Url };
-        await setDoc(doc(db, 'settings', 'site_config'), newConfig, { merge: true });
-        
-        setPopupUploadMessage('🔍 Verifying saved popup...');
-        const docSnap = await getDoc(doc(db, 'settings', 'site_config'));
-        if (!docSnap.exists() || !docSnap.data().popupImage) {
-            throw new Error('Verification failed. Data was not saved properly.');
-        }
-        
-        setLocalSiteConfig(newConfig);
-      };
-
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Upload timed out. Please try again.')), 15000)
-      );
-
-      await Promise.race([processUpload(), timeoutPromise]);
+      });
+      
+      setPopupUploadState('processing');
+      setPopupUploadMessage('Retrieving download URL from Firebase Storage...');
+      
+      const downloadUrl = await getDownloadURL(uploadResult.ref);
+      if (!downloadUrl) {
+        throw new Error('Failed to retrieve image download URL from Firebase Storage.');
+      }
+      
+      setLocalSiteConfig(prev => ({
+        ...prev,
+        popupImage: downloadUrl,
+        imageUrl: downloadUrl
+      }));
       
       setPopupUploadState('success');
-      setPopupUploadMessage('✅ Popup image uploaded successfully');
-      
-      setTimeout(() => {
-        setPopupUploadState('idle');
-        setPopupUploadMessage('');
-      }, 5000);
-      
-    } catch (error: any) {
-      console.error("Popup upload error:", error);
-      setPopupUploadState('error');
-      setPopupUploadMessage('❌ ' + (error.message || 'Upload failed.'));
-      
+      setPopupUploadMessage('✅ Uploaded to Firebase Storage. Remember to click "Save Popup Config" below.');
       setTimeout(() => {
         setPopupUploadState('idle');
         setPopupUploadMessage('');
       }, 7000);
+      
+    } catch (error: any) {
+      console.error("Popup upload error:", error);
+      setPopupUploadState('error');
+      setPopupUploadMessage('❌ Firebase Storage Error: ' + (error.message || 'Upload failed.'));
+      
+      setTimeout(() => {
+        setPopupUploadState('idle');
+        setPopupUploadMessage('');
+      }, 8000);
     } finally {
       if (e.target) e.target.value = '';
+    }
+  };
+
+  const savePopupConfig = async () => {
+    setSavingPopup(true);
+    setPopupSaveFeedback(null);
+    try {
+      // 1. Validate configuration
+      if (localSiteConfig.popupEnabled && !localSiteConfig.popupImage?.trim()) {
+        setPopupSaveFeedback({
+          type: 'error',
+          message: '❌ Please upload an image or enter an Image URL before enabling the popup.'
+        });
+        setSavingPopup(false);
+        return;
+      }
+
+      const img = (localSiteConfig.popupImage || '').trim();
+      const popupPayload = {
+        enabled: Boolean(localSiteConfig.popupEnabled),
+        frequency: localSiteConfig.popupFrequency || 'session',
+        imageUrl: img,
+        popupImage: img,
+        updatedAt: Date.now(),
+        updatedBy: user?.email || 'admin'
+      };
+
+      // 2. Save canonical settings/popup document in Firestore
+      try {
+        await setDoc(doc(db, 'settings', 'popup'), popupPayload, { merge: true });
+        await setDoc(doc(db, 'settings', 'site_config'), {
+          popupEnabled: popupPayload.enabled,
+          popupFrequency: popupPayload.frequency,
+          popupImage: popupPayload.imageUrl,
+          imageUrl: popupPayload.imageUrl,
+          updatedAt: popupPayload.updatedAt
+        }, { merge: true });
+      } catch (clientWriteErr: any) {
+        console.warn('Direct Firestore save threw error, fallback to server save endpoint:', clientWriteErr);
+        const res = await fetch('/api/admin/save-popup-config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(popupPayload)
+        });
+        if (!res.ok) {
+          const errBody = await res.json();
+          throw new Error(errBody.error || clientWriteErr.message || 'Write failed');
+        }
+      }
+
+      setPopupSaveFeedback({
+        type: 'success',
+        message: '✅ Global Popup configuration saved to Firestore successfully!'
+      });
+      setTimeout(() => {
+        setPopupSaveFeedback(null);
+      }, 5000);
+    } catch (e: any) {
+      console.error('Failed to save popup config:', e);
+      setPopupSaveFeedback({
+        type: 'error',
+        message: '❌ Firestore Error: ' + (e.message || 'Failed to save configuration.')
+      });
+    } finally {
+      setSavingPopup(false);
     }
   };
 
@@ -1032,37 +1124,80 @@ export default function AdminPanel() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="space-y-4">
                   <div>
-                    <label className="text-xs text-neutral-400 mb-1 block">Popup Frequency</label>
+                    <label className="text-xs text-neutral-400 mb-1 block font-semibold uppercase tracking-wider">Popup Display Frequency</label>
                     <select 
                       value={localSiteConfig.popupFrequency || 'session'} 
                       onChange={e => setLocalSiteConfig({...localSiteConfig, popupFrequency: e.target.value as any})}
-                      className="w-full bg-black border border-white/10 rounded-xl px-4 py-3 text-sm focus:border-amber-500 outline-none appearance-none"
+                      className="w-full bg-black border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:border-amber-500 outline-none"
                     >
-                      <option value="always">Show Every Visit</option>
-                      <option value="daily">Show Once Per Day</option>
-                      <option value="session">Show Once Per Session</option>
-                      <option value="once">Show Only One Time Ever</option>
+                      <option value="session">Once Per Session (Recommended)</option>
+                      <option value="always">Every Visit (Always)</option>
+                      <option value="daily">Once Per Day</option>
+                      <option value="once">Only One Time Ever</option>
                     </select>
+                    <p className="text-[11px] text-neutral-500 mt-1.5">
+                      Controls how often a user sees this announcement popup on your website.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="text-xs text-neutral-400 mb-1 block font-semibold uppercase tracking-wider">Direct Image URL (Optional)</label>
+                    <input 
+                      type="url"
+                      value={localSiteConfig.popupImage || ''}
+                      onChange={e => setLocalSiteConfig({ ...localSiteConfig, popupImage: e.target.value, imageUrl: e.target.value })}
+                      placeholder="https://... or upload image on the right"
+                      className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white focus:border-amber-500 outline-none"
+                    />
                   </div>
                 </div>
 
                 <div className="space-y-4">
                   <div>
-                    <label className="text-xs text-neutral-400 mb-1 block">Popup Image (Firebase Storage)</label>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-xs text-neutral-400 block font-semibold uppercase tracking-wider">Popup Image (Firebase Storage)</label>
+                      {localSiteConfig.popupImage && (
+                        <button 
+                          type="button"
+                          onClick={() => setLocalSiteConfig({...localSiteConfig, popupImage: '', imageUrl: ''})} 
+                          className="text-[11px] text-red-400 hover:text-red-300 flex items-center gap-1 font-semibold"
+                        >
+                          <Trash2 size={12} /> Remove Image
+                        </button>
+                      )}
+                    </div>
                     {localSiteConfig.popupImage ? (
-                      <div className="relative w-full h-48 bg-black rounded-xl overflow-hidden border border-white/10 mb-2 flex items-center justify-center">
-                        <img src={localSiteConfig.popupImage} alt="Popup" className="max-w-full max-h-full object-contain" />
-                        <button onClick={() => setLocalSiteConfig({...localSiteConfig, popupImage: ''})} className="absolute top-2 right-2 p-2 bg-black/80 text-white rounded-full hover:bg-red-500 transition-colors backdrop-blur-md">
+                      <div className="relative w-full h-52 bg-black rounded-xl overflow-hidden border border-white/10 flex items-center justify-center p-2">
+                        <img src={localSiteConfig.popupImage} alt="Popup Preview" className="max-w-full max-h-full object-contain rounded-lg" />
+                        <button 
+                          type="button"
+                          onClick={() => setLocalSiteConfig({...localSiteConfig, popupImage: '', imageUrl: ''})} 
+                          className="absolute top-3 right-3 p-2 bg-black/80 text-white rounded-full hover:bg-red-500 transition-colors backdrop-blur-md"
+                          title="Remove image"
+                        >
                           <Trash2 size={16} />
                         </button>
                       </div>
                     ) : (
-                      <div className="w-full h-48 bg-black border border-white/10 rounded-xl px-4 py-3 text-sm text-neutral-500 relative flex items-center justify-center hover:border-amber-500/50 transition-colors border-dashed">
-                        <input type="file" accept="image/*" onChange={handlePopupImageUpload} disabled={popupUploadState !== 'idle' && popupUploadState !== 'error' && popupUploadState !== 'success'} className="absolute inset-0 opacity-0 cursor-pointer" />
-                        <div className="flex flex-col items-center gap-2 pointer-events-none">
-                          <ImageIcon size={24} className={popupUploadState === 'error' ? "text-red-500" : popupUploadState === 'success' ? "text-green-500" : "text-neutral-600"} />
-                          <span className={popupUploadState === 'error' ? "text-red-500" : popupUploadState === 'success' ? "text-green-500" : "text-amber-500"}>
+                      <div className="w-full h-52 bg-black border border-white/10 rounded-xl px-4 py-3 text-sm text-neutral-500 relative flex items-center justify-center hover:border-amber-500/50 transition-colors border-dashed">
+                        <input 
+                          type="file" 
+                          accept="image/*" 
+                          onChange={handlePopupImageUpload} 
+                          disabled={popupUploadState === 'uploading' || popupUploadState === 'processing'} 
+                          className="absolute inset-0 opacity-0 cursor-pointer" 
+                        />
+                        <div className="flex flex-col items-center gap-2 pointer-events-none text-center px-4">
+                          {popupUploadState === 'uploading' || popupUploadState === 'processing' ? (
+                            <RefreshCw size={24} className="animate-spin text-amber-500" />
+                          ) : (
+                            <ImageIcon size={24} className={popupUploadState === 'error' ? "text-red-500" : popupUploadState === 'success' ? "text-green-500" : "text-neutral-500"} />
+                          )}
+                          <span className={`text-xs font-semibold ${popupUploadState === 'error' ? "text-red-400" : popupUploadState === 'success' ? "text-green-400" : "text-neutral-300"}`}>
                              {popupUploadState !== 'idle' ? popupUploadMessage : "Upload from Gallery"}
+                          </span>
+                          <span className="text-[10px] text-neutral-500">
+                            Supports PNG, JPG, WebP up to 10MB
                           </span>
                         </div>
                       </div>
@@ -1071,12 +1206,31 @@ export default function AdminPanel() {
                 </div>
               </div>
 
-              <div className="pt-4 border-t border-white/5 flex gap-4">
-                <button onClick={saveSiteConfig} className="bg-amber-500 text-black font-bold py-3 px-6 rounded-xl hover:bg-amber-400 transition-colors flex items-center gap-2">
-                  <Save size={16} /> Save Popup Config
+              {popupSaveFeedback && (
+                <div className={`p-4 rounded-2xl text-xs font-bold flex items-center gap-2.5 ${
+                  popupSaveFeedback.type === 'success' 
+                    ? 'bg-green-500/10 border border-green-500/30 text-green-400' 
+                    : 'bg-red-500/10 border border-red-500/30 text-red-400'
+                }`}>
+                  {popupSaveFeedback.type === 'success' ? <CheckCircle2 size={16} className="shrink-0" /> : <XCircle size={16} className="shrink-0" />}
+                  <span>{popupSaveFeedback.message}</span>
+                </div>
+              )}
+
+              <div className="pt-4 border-t border-white/5 flex flex-wrap items-center gap-4">
+                <button 
+                  onClick={savePopupConfig} 
+                  disabled={savingPopup}
+                  className="bg-amber-500 text-black font-bold py-3 px-6 rounded-xl hover:bg-amber-400 transition-colors flex items-center gap-2 disabled:opacity-50"
+                >
+                  {savingPopup ? <RefreshCw className="animate-spin" size={16} /> : <Save size={16} />}
+                  {savingPopup ? 'Saving to Firestore...' : 'Save Popup Config'}
                 </button>
-                <button onClick={() => setShowPopupPreview(true)} className="bg-neutral-800 text-white font-bold py-3 px-6 rounded-xl hover:bg-neutral-700 transition-colors flex items-center gap-2">
-                  <Eye size={16} /> Preview
+                <button 
+                  onClick={() => setShowPopupPreview(true)} 
+                  className="bg-neutral-800 text-white font-bold py-3 px-6 rounded-xl hover:bg-neutral-700 transition-colors flex items-center gap-2"
+                >
+                  <Eye size={16} /> Preview Modal
                 </button>
               </div>
             </div>
