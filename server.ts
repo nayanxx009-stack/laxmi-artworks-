@@ -855,7 +855,7 @@ async function startServer() {
   });
 
   // Broadcast Push Notification (Supports topic OR token multicast)
-  app.post("/api/broadcast-push", async (req, res) => {
+  app.post(["/api/broadcast-push", "/api/admin/broadcast-push"], async (req, res) => {
     const { tokens, topic, title, body, url } = req.body;
     console.log(`[Push API] Broadcast requested. Topic: ${topic || 'none'}, Tokens count: ${tokens?.length || 0}`);
     
@@ -923,30 +923,70 @@ async function startServer() {
       
       console.log(`[Push API] Broadcast success count: ${response.successCount}, failure count: ${response.failureCount}`);
       
-      if (response.failureCount > 0) {
-        response.responses.forEach(async (resp, idx) => {
-          if (!resp.success) {
-            console.error(`[Push API] Failed to send to token ${tokens[idx]}: ${resp.error?.message}`);
-            if (resp.error?.code === 'messaging/invalid-registration-token' ||
-                resp.error?.code === 'messaging/registration-token-not-registered') {
-              const invalidToken = tokens[idx];
-              console.log(`[Push API] Cleaning up invalid token: ${invalidToken}`);
+      const deviceResults: any[] = [];
+      const cleanupPromises: Promise<any>[] = [];
+
+      for (let idx = 0; idx < tokens.length; idx++) {
+        const targetToken = tokens[idx];
+        const resp = response.responses[idx];
+        const tokenPreview = targetToken.length > 16
+          ? `${targetToken.substring(0, 8)}...${targetToken.substring(targetToken.length - 6)}`
+          : targetToken;
+
+        let cleanupAction = 'Active (No cleanup needed)';
+        const errorCode = resp.error?.code || null;
+        const errorMessage = resp.error?.message || null;
+
+        if (!resp.success) {
+          if (errorCode === 'messaging/invalid-registration-token' ||
+              errorCode === 'messaging/registration-token-not-registered') {
+            cleanupAction = 'Stale registration cleaned up from Firestore';
+            cleanupPromises.push((async () => {
               try {
                 const fcmSnap = await getDocs(collection(db, 'fcm_tokens'));
-                fcmSnap.forEach(async (docSnap) => {
+                for (const docSnap of fcmSnap.docs) {
                   const data = docSnap.data();
-                  if (data.tokens && data.tokens.includes(invalidToken)) {
-                    const filtered = data.tokens.filter((t: string) => t !== invalidToken);
+                  if (data.tokens && data.tokens.includes(targetToken)) {
+                    const filtered = data.tokens.filter((t: string) => t !== targetToken);
                     await updateDoc(doc(db, 'fcm_tokens', docSnap.id), { tokens: filtered });
+                  } else if (data.token === targetToken) {
+                    await deleteDoc(doc(db, 'fcm_tokens', docSnap.id));
                   }
-                });
+                }
               } catch (e) { /* ignore */ }
-            }
+            })());
+          } else if (errorCode === 'messaging/mismatched-credential') {
+            cleanupAction = 'Config mismatch (Sender ID / Project ID mismatch)';
+          } else if (errorCode === 'messaging/invalid-argument') {
+            cleanupAction = 'Payload format invalid or target malformed';
+          } else {
+            cleanupAction = 'Delivery failure logged';
           }
+        }
+
+        deviceResults.push({
+          token: targetToken,
+          tokenPreview,
+          success: resp.success,
+          messageId: resp.messageId || null,
+          errorCode,
+          errorMessage,
+          cleanupAction,
+          timestamp: Date.now()
         });
       }
-      
-      res.json({ success: true, response });
+
+      await Promise.allSettled(cleanupPromises);
+
+      res.json({
+        success: true,
+        response: {
+          successCount: response.successCount,
+          failureCount: response.failureCount,
+          totalCount: tokens.length,
+          deviceResults
+        }
+      });
     } catch (err: any) {
       console.error('[Push API] FCM Broadcast Error:', err.message);
       res.status(500).json({ error: err.message });

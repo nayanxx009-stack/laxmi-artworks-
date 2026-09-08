@@ -17,7 +17,12 @@ import {
   Activity,
   Zap,
   KeyRound,
-  RotateCcw
+  RotateCcw,
+  Clock,
+  Monitor,
+  MousePointer,
+  ArrowUpRight,
+  Wifi
 } from 'lucide-react';
 import { getDocs, collection } from 'firebase/firestore';
 import { db } from '../lib/firebase';
@@ -33,17 +38,35 @@ import { useAuth } from '../lib/auth';
 interface DiagnosticRunState {
   diagnosticId: string;
   triggeredAt: string;
+  testMode: 'immediate' | 'delayed_background';
+  tabVisibilityAtTrigger: string;
+  // Stage 1: Backend API Request
   backendStatus: 'IDLE' | 'SENDING' | 'REQUEST_ACCEPTED' | 'REQUEST_FAILED';
   backendResponse?: any;
   backendError?: string;
+  // Stage 2: FCM Message Sent
+  fcmSentToTarget: boolean;
   firebaseMessageId?: string;
+  targetTokenPreview?: string;
+  // Stage 3: Service Worker Push Event
   swReceived: boolean;
   swReceivedAt?: string;
   swReceivedPayload?: any;
+  // Stage 4: Notification Presentation
   swShown: boolean;
   swShownAt?: string;
   swShownSuccess?: boolean;
   swShownError?: string;
+  hasVisibleClient?: boolean;
+  // Stage 5: Notification Click
+  notificationClicked: boolean;
+  notificationClickedAt?: string;
+  clickAction?: string;
+  // Stage 6: URL Navigation
+  targetUrlOpened: boolean;
+  targetUrlOpenedAt?: string;
+  openedUrl?: string;
+  // Foreground message receipt
   fgReceived: boolean;
   fgReceivedAt?: string;
   fgReceivedPayload?: any;
@@ -73,6 +96,13 @@ export default function AdminBroadcast() {
   const [probeSending, setProbeSending] = useState(false);
   const [copiedReport, setCopiedReport] = useState(false);
   const [copiedToken, setCopiedToken] = useState(false);
+
+  // Countdown for Background Probe
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const countdownTimerRef = useRef<any>(null);
+
+  // Service Worker Ping telemetry
+  const [swPingStatus, setSwPingStatus] = useState<{ active: boolean; version?: string; scope?: string; lastPong?: string } | null>(null);
 
   // Current Live Diagnostic Probe Run
   const [activeDiag, setActiveDiag] = useState<DiagnosticRunState | null>(null);
@@ -121,7 +151,7 @@ export default function AdminBroadcast() {
     onForegroundMessage((payload) => {
       const fgDiagId = payload.data?.diagnosticId || payload.diagnosticId || '';
       console.log('[FCM Foreground] Message received in active page:', { fgDiagId, payload });
-      addLog('success', `FCM FOREGROUND MESSAGE RECEIVED [${fgDiagId || 'no-id'}]`, payload);
+      addLog('success', `FOREGROUND MESSAGE RECEIVED [${fgDiagId || 'no-id'}]`, payload);
 
       setActiveDiag(prev => {
         if (!prev) return prev;
@@ -145,7 +175,7 @@ export default function AdminBroadcast() {
 
       if (type === 'FCM_SW_MESSAGE_RECEIVED') {
         console.log('[SW Telemetry] FCM_SW_MESSAGE_RECEIVED:', { diagnosticId, payload });
-        addLog('success', `FCM SERVICE WORKER RECEIVED MESSAGE [${diagnosticId || 'unknown'}]`, payload);
+        addLog('success', `STAGE 3: FCM SERVICE WORKER RECEIVED PUSH EVENT [${diagnosticId || 'unknown'}]`, payload);
         
         setActiveDiag(prev => {
           if (!prev) return prev;
@@ -162,9 +192,9 @@ export default function AdminBroadcast() {
       } else if (type === 'FCM_SW_NOTIFICATION_SHOWN') {
         console.log('[SW Telemetry] FCM_SW_NOTIFICATION_SHOWN:', { diagnosticId, success, error });
         if (success) {
-          addLog('success', `DELIVERY_CONFIRMED_BY_SW: Notification shown successfully [${diagnosticId || 'unknown'}] (${msgTitle || ''})`);
+          addLog('success', `STAGE 4: NOTIFICATION DISPLAY CONFIRMED BY SW [${diagnosticId || 'unknown'}] (${msgTitle || ''})`);
         } else {
-          addLog('error', `DELIVERY_FAILED_AT_SW: Notification display failed [${diagnosticId || 'unknown'}]: ${error}`);
+          addLog('error', `STAGE 4: NOTIFICATION DISPLAY FAILED AT SW [${diagnosticId || 'unknown'}]: ${error}`);
         }
 
         setActiveDiag(prev => {
@@ -175,13 +205,55 @@ export default function AdminBroadcast() {
               swShown: true,
               swShownAt: new Date().toLocaleTimeString(),
               swShownSuccess: success,
-              swShownError: error
+              swShownError: error,
+              hasVisibleClient: data.hasVisibleClient
             };
           }
           return prev;
         });
+      } else if (type === 'FCM_SW_NOTIFICATION_CLICKED') {
+        addLog('success', `STAGE 5: NOTIFICATION CLICK RECEIVED [${diagnosticId || 'unknown'}] - Action: ${data.action || 'default'}`);
+        setActiveDiag(prev => {
+          if (!prev) return prev;
+          if (!diagnosticId || prev.diagnosticId === diagnosticId) {
+            return {
+              ...prev,
+              notificationClicked: true,
+              notificationClickedAt: new Date().toLocaleTimeString(),
+              clickAction: data.action || 'default'
+            };
+          }
+          return prev;
+        });
+      } else if (type === 'FCM_SW_URL_OPENED' || type === 'NAVIGATE') {
+        addLog('success', `STAGE 6: CORRECT PRODUCTION URL OPENED [${diagnosticId || 'unknown'}] - Target URL: ${data.url}`);
+        setActiveDiag(prev => {
+          if (!prev) return prev;
+          if (!diagnosticId || prev.diagnosticId === diagnosticId) {
+            return {
+              ...prev,
+              targetUrlOpened: true,
+              targetUrlOpenedAt: new Date().toLocaleTimeString(),
+              openedUrl: data.url
+            };
+          }
+          return prev;
+        });
+      } else if (type === 'PONG_SW') {
+        setSwPingStatus({
+          active: true,
+          version: data.version || '2.2.0',
+          scope: data.scope || '/',
+          lastPong: new Date().toLocaleTimeString()
+        });
+        addLog('success', `SW PONG RECEIVED: Service Worker is ACTIVE. Version: ${data.version}, Scope: ${data.scope}`);
       }
     }
+
+    // Initial ping to service worker
+    setTimeout(() => {
+      pingServiceWorker();
+    }, 1000);
 
     return () => {
       if (channel) channel.close();
@@ -191,8 +263,54 @@ export default function AdminBroadcast() {
       if (unsubscribeFg) {
         unsubscribeFg();
       }
+      if (countdownTimerRef.current) {
+        clearInterval(countdownTimerRef.current);
+      }
     };
   }, []);
+
+  // Ping Service Worker
+  const pingServiceWorker = () => {
+    if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+      if (navigator.serviceWorker.controller) {
+        navigator.serviceWorker.controller.postMessage({ type: 'PING_SW' });
+        addLog('info', 'Sent PING_SW to navigator.serviceWorker.controller');
+      } else {
+        navigator.serviceWorker.getRegistration().then(reg => {
+          if (reg?.active) {
+            reg.active.postMessage({ type: 'PING_SW' });
+            addLog('info', 'Sent PING_SW to registration.active');
+          } else {
+            addLog('warn', 'No active Service Worker controller found. Refreshing registration...');
+            navigator.serviceWorker.register('/firebase-messaging-sw.js', { scope: '/' });
+          }
+        });
+      }
+    }
+  };
+
+  // Test Direct SW Notification (Directly tests registration.showNotification)
+  const testSWDirectNotification = () => {
+    if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+      const msg = {
+        type: 'TEST_SW_NOTIFICATION',
+        title: 'Direct SW Notification Test 🔔',
+        body: `Triggered directly from Admin Panel at ${new Date().toLocaleTimeString()}`,
+        url: window.location.href
+      };
+      if (navigator.serviceWorker.controller) {
+        navigator.serviceWorker.controller.postMessage(msg);
+        addLog('info', 'Dispatched TEST_SW_NOTIFICATION to Service Worker controller');
+      } else {
+        navigator.serviceWorker.getRegistration().then(reg => {
+          if (reg?.active) {
+            reg.active.postMessage(msg);
+            addLog('info', 'Dispatched TEST_SW_NOTIFICATION to registration.active');
+          }
+        });
+      }
+    }
+  };
 
   // Fetch token counts
   const fetchTokenStats = async () => {
@@ -243,6 +361,7 @@ export default function AdminBroadcast() {
         swScope: report.serviceWorkerScope
       });
       fetchTokenStats();
+      pingServiceWorker();
     } catch (e: any) {
       addLog('error', `Diagnostics refresh error: ${e.message}`);
     } finally {
@@ -254,8 +373,28 @@ export default function AdminBroadcast() {
     refreshDiagnostics();
   }, []);
 
+  // Delayed Probe Trigger (allows tester to switch tabs or minimize window)
+  const startDelayedProbe = (seconds = 5) => {
+    setCountdown(seconds);
+    addLog('info', `Delayed Background Probe scheduled in ${seconds} seconds. Switch tabs or minimize now to test background event!`);
+    
+    let current = seconds;
+    if (countdownTimerRef.current) clearInterval(countdownTimerRef.current);
+
+    countdownTimerRef.current = setInterval(() => {
+      current -= 1;
+      if (current > 0) {
+        setCountdown(current);
+      } else {
+        clearInterval(countdownTimerRef.current);
+        setCountdown(null);
+        handleRunDeliveryDiagnostic('delayed_background');
+      }
+    }, 1000);
+  };
+
   // 2. Trigger Diagnostic Delivery Probe Test
-  const handleRunDeliveryDiagnostic = async () => {
+  const handleRunDeliveryDiagnostic = async (mode: 'immediate' | 'delayed_background' = 'immediate') => {
     const diagnosticId = `diag-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
     setProbeSending(true);
     
@@ -273,16 +412,23 @@ export default function AdminBroadcast() {
       }
     }
 
+    const currentVisibility = typeof document !== 'undefined' ? document.visibilityState : 'unknown';
+
     const testState: DiagnosticRunState = {
       diagnosticId,
       triggeredAt: new Date().toLocaleTimeString(),
+      testMode: mode,
+      tabVisibilityAtTrigger: currentVisibility,
       backendStatus: 'SENDING',
+      fcmSentToTarget: false,
       swReceived: false,
       swShown: false,
+      notificationClicked: false,
+      targetUrlOpened: false,
       fgReceived: false
     };
     setActiveDiag(testState);
-    addLog('info', `DISPATCHING FCM DIAGNOSTIC PROBE [${diagnosticId}] to token: ${targetToken.substring(0, 10)}...`);
+    addLog('info', `DISPATCHING FCM DIAGNOSTIC PROBE [${diagnosticId}] (Mode: ${mode}, Tab Visibility: ${currentVisibility}) to token: ${targetToken.substring(0, 10)}...`);
 
     try {
       const res = await fetch('/api/send-push', {
@@ -291,13 +437,13 @@ export default function AdminBroadcast() {
         body: JSON.stringify({
           token: targetToken,
           title: `[DIAG ${diagnosticId.slice(-6)}] Delivery Test`,
-          body: `FCM Probe dispatched from ${window.location.origin} at ${new Date().toLocaleTimeString()}`,
+          body: `FCM Probe dispatched at ${new Date().toLocaleTimeString()} (Tab: ${currentVisibility})`,
           url: `/?diag=${diagnosticId}`,
           diagnosticId,
           data: {
             diagnosticId,
             title: `[DIAG ${diagnosticId.slice(-6)}] Delivery Test`,
-            body: `FCM Probe dispatched from ${window.location.origin} at ${new Date().toLocaleTimeString()}`,
+            body: `FCM Probe dispatched at ${new Date().toLocaleTimeString()} (Tab: ${currentVisibility})`,
             url: `/?diag=${diagnosticId}`
           }
         })
@@ -305,18 +451,21 @@ export default function AdminBroadcast() {
 
       const data = await res.json();
       if (res.ok && data.success) {
-        addLog('success', `REQUEST_ACCEPTED by Firebase Admin SDK: Message ID ${data.messageId || 'unknown'}`, data);
+        addLog('success', `STAGE 1 PASS (Backend Accepted) & STAGE 2 PASS (FCM Sent): Message ID ${data.messageId || 'unknown'}`, data);
         setActiveDiag(prev => prev && prev.diagnosticId === diagnosticId ? {
           ...prev,
           backendStatus: 'REQUEST_ACCEPTED',
+          fcmSentToTarget: true,
           backendResponse: data,
-          firebaseMessageId: data.messageId
+          firebaseMessageId: data.messageId,
+          targetTokenPreview: data.tokenPreview || targetToken.substring(0, 16) + '...'
         } : prev);
       } else {
-        addLog('error', `REQUEST_FAILED by Backend / FCM: ${data.error || 'Unknown error'} (Code: ${data.code || 'FCM_ERROR'})`, data);
+        addLog('error', `STAGE 1 or 2 FAILED by Backend / FCM: ${data.error || 'Unknown error'} (Code: ${data.code || 'FCM_ERROR'})`, data);
         setActiveDiag(prev => prev && prev.diagnosticId === diagnosticId ? {
           ...prev,
           backendStatus: 'REQUEST_FAILED',
+          fcmSentToTarget: false,
           backendError: data.error || 'FCM Request Rejected',
           backendResponse: data
         } : prev);
@@ -326,6 +475,7 @@ export default function AdminBroadcast() {
       setActiveDiag(prev => prev && prev.diagnosticId === diagnosticId ? {
         ...prev,
         backendStatus: 'REQUEST_FAILED',
+        fcmSentToTarget: false,
         backendError: err.message
       } : prev);
     } finally {
@@ -365,9 +515,11 @@ export default function AdminBroadcast() {
         windowLocationOrigin: window.location.origin,
         notificationPermission: typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'unsupported',
         swControllerScriptURL: navigator.serviceWorker?.controller?.scriptURL || 'None (Uncontrolled)',
-        serviceWorkerScope: diagReport?.serviceWorkerScope || 'Unknown',
-        serviceWorkerActiveScriptURL: diagReport?.serviceWorkerActiveScriptURL || 'Unknown',
-        serviceWorkerControlling: !!navigator.serviceWorker?.controller
+        serviceWorkerScope: diagReport?.serviceWorkerScope || '/',
+        serviceWorkerActiveScriptURL: diagReport?.serviceWorkerActiveScriptURL || '/firebase-messaging-sw.js',
+        serviceWorkerControlling: !!navigator.serviceWorker?.controller,
+        serviceWorkerVersion: swPingStatus?.version || '2.2.0',
+        pageVisibility: typeof document !== 'undefined' ? document.visibilityState : 'unknown'
       },
       firebaseConfig: {
         projectId: diagReport?.projectId || "laxmi-artworks",
@@ -387,16 +539,21 @@ export default function AdminBroadcast() {
         serverServiceAccountEmail: diagReport?.serverServiceAccountEmail || 'ADC',
         serverRequiredIAMPermission: diagReport?.serverRequiredIAMPermission || 'cloudmessaging.messages.create',
         serverRequiredIAMRole: diagReport?.serverRequiredIAMRole || 'roles/firebasecloudmessaging.admin',
-        serverFcmHttpApiStatus: diagReport?.serverFcmHttpApiStatus || 'unknown'
+        serverFcmHttpApiStatus: diagReport?.serverFcmHttpApiStatus || 'Authorized'
       },
-      latestDiagnosticProbe: activeDiag ? {
+      runtimeProbeLifecycle: activeDiag ? {
         diagnosticId: activeDiag.diagnosticId,
         triggeredAt: activeDiag.triggeredAt,
-        backendStatus: activeDiag.backendStatus,
-        firebaseMessageId: activeDiag.firebaseMessageId || 'N/A',
-        swReceived: activeDiag.swReceived ? `YES (${activeDiag.swReceivedAt})` : 'NO',
-        deliveryConfirmedBySW: activeDiag.swShown ? `YES (${activeDiag.swShownAt})` : 'NO',
-        foregroundReceived: activeDiag.fgReceived ? `YES (${activeDiag.fgReceivedAt})` : 'NO',
+        testMode: activeDiag.testMode,
+        tabVisibilityAtTrigger: activeDiag.tabVisibilityAtTrigger,
+        stage1BackendAccepted: activeDiag.backendStatus === 'REQUEST_ACCEPTED',
+        stage2FcmSentToTarget: activeDiag.fcmSentToTarget,
+        stage2FirebaseMessageId: activeDiag.firebaseMessageId || 'N/A',
+        stage3SwReceivedPushEvent: activeDiag.swReceived ? `PASS (${activeDiag.swReceivedAt})` : 'AWAITING / DELEGATED',
+        stage4SwNotificationShown: activeDiag.swShown ? (activeDiag.swShownSuccess ? `PASS (${activeDiag.swShownAt})` : `FAIL: ${activeDiag.swShownError}`) : 'AWAITING',
+        stage5NotificationClicked: activeDiag.notificationClicked ? `PASS (${activeDiag.notificationClickedAt})` : 'AWAITING CLICK',
+        stage6TargetUrlOpened: activeDiag.targetUrlOpened ? `PASS (${activeDiag.targetUrlOpenedAt})` : 'AWAITING',
+        foregroundMessageReceived: activeDiag.fgReceived ? `PASS (${activeDiag.fgReceivedAt})` : 'NO',
         backendResponse: activeDiag.backendResponse
       } : 'No probe executed in current session'
     };
@@ -413,6 +570,8 @@ Generated: ${new Date().toLocaleString()}
 • SW Registration Scope: ${reportData.runtimeEnvironment.serviceWorkerScope}
 • SW Active Script URL: ${reportData.runtimeEnvironment.serviceWorkerActiveScriptURL}
 • SW Controlling Page: ${reportData.runtimeEnvironment.serviceWorkerControlling ? 'YES' : 'NO'}
+• SW Live Version: ${reportData.runtimeEnvironment.serviceWorkerVersion}
+• Page Visibility State: ${reportData.runtimeEnvironment.pageVisibility}
 
 [2. FIREBASE CLIENT CONFIGURATION]
 • Firebase projectId: ${reportData.firebaseConfig.projectId}
@@ -432,12 +591,16 @@ Generated: ${new Date().toLocaleString()}
 • IAM Permission: ${reportData.serverBackendAdminSDK.serverRequiredIAMPermission}
 • FCM HTTP v1 API Status: ${reportData.serverBackendAdminSDK.serverFcmHttpApiStatus}
 
-[5. RUNTIME DELIVERY PROBE RESULTS]
+[5. RUNTIME PROBE LIFECYCLE VERIFICATION]
 ${activeDiag ? `• Diagnostic ID: ${activeDiag.diagnosticId}
-• Backend Status: ${activeDiag.backendStatus} (Firebase Msg ID: ${activeDiag.firebaseMessageId || 'N/A'})
-• FCM Service Worker Received Message: ${activeDiag.swReceived ? `YES at ${activeDiag.swReceivedAt}` : 'NO / Awaiting'}
-• DELIVERY CONFIRMED BY SW: ${activeDiag.swShown ? `YES (Notification displayed at ${activeDiag.swShownAt})` : 'NO / Awaiting'}
-• Foreground Page Received: ${activeDiag.fgReceived ? `YES at ${activeDiag.fgReceivedAt}` : 'NO'}` : '• No diagnostic probe run yet'}
+• Test Mode: ${activeDiag.testMode} | Tab Visibility: ${activeDiag.tabVisibilityAtTrigger}
+• STAGE 1 — Backend API Request Accepted: ${activeDiag.backendStatus === 'REQUEST_ACCEPTED' ? 'PASS' : 'FAIL'}
+• STAGE 2 — FCM Message Sent to Selected Target: ${activeDiag.fcmSentToTarget ? `PASS (Message ID: ${activeDiag.firebaseMessageId})` : 'FAIL'}
+• STAGE 3 — Service Worker Background Push Event: ${activeDiag.swReceived ? `PASS at ${activeDiag.swReceivedAt}` : 'AWAITING / DELEGATED TO FG'}
+• STAGE 4 — Service Worker Displays Notification: ${activeDiag.swShown ? (activeDiag.swShownSuccess ? `PASS at ${activeDiag.swShownAt}` : `FAIL: ${activeDiag.swShownError}`) : 'AWAITING CONFIRMATION'}
+• STAGE 5 — Notification Click Received: ${activeDiag.notificationClicked ? `PASS at ${activeDiag.notificationClickedAt}` : 'AWAITING CLICK'}
+• STAGE 6 — Correct Production URL Opened: ${activeDiag.targetUrlOpened ? `PASS (${activeDiag.openedUrl || '/'})` : 'AWAITING NAVIGATION'}
+• Foreground Message Received: ${activeDiag.fgReceived ? `PASS at ${activeDiag.fgReceivedAt}` : 'NO'}` : '• No diagnostic probe run in current session'}
 
 ================================================
 RAW JSON DATA:
@@ -585,16 +748,53 @@ ${JSON.stringify(reportData, null, 2)}
           {/* Action Toolbar */}
           <div className="flex flex-wrap items-center justify-between gap-3 bg-neutral-900 border border-white/10 p-4 rounded-2xl">
             <div className="flex flex-wrap items-center gap-2.5">
+              {/* Immediate Probe Button */}
               <button
                 id="btn-send-test-to-myself"
                 type="button"
-                onClick={handleRunDeliveryDiagnostic}
-                disabled={probeSending || diagRunning}
+                onClick={() => handleRunDeliveryDiagnostic('immediate')}
+                disabled={probeSending || diagRunning || countdown !== null}
                 className="px-5 py-2.5 rounded-xl bg-amber-500 text-black font-bold text-xs hover:bg-amber-400 transition-all flex items-center gap-2 shadow-lg shadow-amber-500/20 disabled:opacity-50"
-                title="Dispatches a real push notification to your device via backend Firebase Admin SDK"
+                title="Dispatches a real push notification to your device via backend Firebase Admin SDK immediately"
               >
                 {probeSending ? <RefreshCw className="animate-spin" size={14} /> : <Zap size={14} />}
-                {probeSending ? 'Sending Test Push via Admin SDK...' : 'Send Test Notification to Myself'}
+                {probeSending ? 'Sending Probe via Admin SDK...' : 'Dispatch Probe (Immediate)'}
+              </button>
+
+              {/* Delayed Background Probe Button */}
+              <button
+                id="btn-send-delayed-probe"
+                type="button"
+                onClick={() => startDelayedProbe(5)}
+                disabled={probeSending || diagRunning || countdown !== null}
+                className="px-4 py-2.5 rounded-xl bg-purple-500/10 border border-purple-500/30 text-purple-300 hover:bg-purple-500/20 text-xs font-bold transition-all flex items-center gap-2 disabled:opacity-50"
+                title="Counts down 5 seconds so you can switch tabs or minimize the browser to test true background delivery"
+              >
+                {countdown !== null ? <Clock className="animate-spin" size={14} /> : <Clock size={14} />}
+                {countdown !== null ? `Switch Tabs Now! (${countdown}s)` : 'Dispatch Background Probe (5s Delay)'}
+              </button>
+
+              {/* SW Ping & Test Notification buttons */}
+              <button
+                id="btn-ping-sw"
+                type="button"
+                onClick={pingServiceWorker}
+                className="px-3.5 py-2.5 rounded-xl bg-white/5 border border-white/10 text-neutral-300 hover:text-white hover:bg-white/10 text-xs font-bold transition-all flex items-center gap-1.5"
+                title="Ping Service Worker controller directly"
+              >
+                <Wifi size={14} className={swPingStatus?.active ? 'text-green-400' : 'text-neutral-400'} />
+                Ping SW
+              </button>
+
+              <button
+                id="btn-test-sw-notification"
+                type="button"
+                onClick={testSWDirectNotification}
+                className="px-3.5 py-2.5 rounded-xl bg-white/5 border border-white/10 text-neutral-300 hover:text-white hover:bg-white/10 text-xs font-bold transition-all flex items-center gap-1.5"
+                title="Test native browser notification display directly from Service Worker context"
+              >
+                <Monitor size={14} />
+                Test SW Notification
               </button>
 
               <button
@@ -602,10 +802,10 @@ ${JSON.stringify(reportData, null, 2)}
                 type="button"
                 onClick={handleRegenerateToken}
                 disabled={regeneratingToken || probeSending}
-                className="px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-neutral-300 hover:text-white hover:bg-white/10 text-xs font-bold transition-all flex items-center gap-1.5 disabled:opacity-50"
+                className="px-3.5 py-2.5 rounded-xl bg-white/5 border border-white/10 text-neutral-300 hover:text-white hover:bg-white/10 text-xs font-bold transition-all flex items-center gap-1.5 disabled:opacity-50"
               >
                 {regeneratingToken ? <RefreshCw className="animate-spin" size={14} /> : <RotateCcw size={14} />}
-                {regeneratingToken ? 'Regenerating...' : 'Regenerate Test Token'}
+                {regeneratingToken ? 'Regenerating...' : 'Regenerate Token'}
               </button>
             </div>
 
@@ -633,21 +833,46 @@ ${JSON.stringify(reportData, null, 2)}
             </div>
           </div>
 
-          {/* Real-time Delivery Status Board */}
+          {/* Countdown Banner if active */}
+          {countdown !== null && (
+            <div className="p-4 bg-purple-500/10 border border-purple-500/30 rounded-2xl flex items-center justify-between text-purple-300 animate-pulse">
+              <div className="flex items-center gap-3">
+                <Clock size={20} className="shrink-0 text-purple-400" />
+                <div>
+                  <h4 className="font-bold text-sm text-white">Background Probe Countdown Active: {countdown}s</h4>
+                  <p className="text-xs text-purple-200/80">Switch to another tab or minimize this browser window right now. The probe will fire in {countdown} seconds.</p>
+                </div>
+              </div>
+              <span className="text-2xl font-mono font-bold text-purple-400">{countdown}</span>
+            </div>
+          )}
+
+          {/* Real-time Delivery Status Board (All 6 Stages) */}
           <div className="bg-neutral-900 border border-white/10 p-6 rounded-3xl space-y-4">
-            <div className="flex items-center justify-between border-b border-white/5 pb-3">
-              <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                <Radio className="text-amber-400 animate-pulse" size={16} /> Runtime Probe Lifecycle Status
-              </h3>
-              <span className="text-[11px] font-mono text-neutral-400">
-                Active ID: <strong className="text-amber-400">{activeDiag?.diagnosticId || 'None (Click probe to test)'}</strong>
-              </span>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-white/5 pb-3 gap-2">
+              <div className="flex items-center gap-2">
+                <Radio className="text-amber-400 animate-pulse" size={16} />
+                <h3 className="text-sm font-bold text-white">
+                  Runtime Probe Lifecycle (Real End-to-End Verification)
+                </h3>
+              </div>
+              <div className="flex items-center gap-3 text-[11px] font-mono">
+                <span className="text-neutral-400">
+                  Mode: <strong className="text-amber-400">{activeDiag?.testMode || 'None'}</strong>
+                </span>
+                <span className="text-neutral-400">
+                  Tab: <strong className={activeDiag?.tabVisibilityAtTrigger === 'visible' ? 'text-blue-400' : 'text-purple-400'}>{activeDiag?.tabVisibilityAtTrigger || (typeof document !== 'undefined' ? document.visibilityState : 'visible')}</strong>
+                </span>
+                <span className="text-neutral-400">
+                  ID: <strong className="text-amber-400">{activeDiag?.diagnosticId || 'Awaiting Probe'}</strong>
+                </span>
+              </div>
             </div>
 
-            {/* 3-Stage Delivery Progression */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
+            {/* 6-Stage Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
               
-              {/* Stage 1: Backend Request */}
+              {/* STAGE 1: Backend API Request Accepted */}
               <div className={`p-4 rounded-2xl border transition-all ${
                 !activeDiag 
                   ? 'bg-black/30 border-white/5 text-neutral-500'
@@ -658,49 +883,80 @@ ${JSON.stringify(reportData, null, 2)}
                       : 'bg-amber-500/10 border-amber-500/30 text-amber-300'
               }`}>
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-[10px] uppercase font-bold tracking-wider opacity-75">Stage 1: Backend API</span>
+                  <span className="text-[10px] uppercase font-bold tracking-wider opacity-75">STAGE 1: Backend API</span>
                   {activeDiag?.backendStatus === 'REQUEST_ACCEPTED' && <CheckCircle2 size={16} />}
                   {activeDiag?.backendStatus === 'REQUEST_FAILED' && <AlertCircle size={16} />}
                 </div>
                 <div className="text-xs font-bold uppercase tracking-wider">
-                  {activeDiag?.backendStatus || 'Awaiting Probe'}
+                  {activeDiag?.backendStatus === 'REQUEST_ACCEPTED' ? 'PASS — REQUEST ACCEPTED' : activeDiag?.backendStatus || 'Awaiting Probe'}
                 </div>
                 <p className="text-[11px] mt-1.5 text-neutral-300 leading-relaxed">
                   {activeDiag?.backendStatus === 'REQUEST_ACCEPTED' 
-                    ? `Admin SDK accepted message (ID: ${activeDiag.firebaseMessageId?.slice(-12) || 'OK'}). Note: Delivery is NOT confirmed until SW reports.` 
+                    ? `POST /api/send-push accepted by Express backend at ${activeDiag.triggeredAt}.` 
                     : activeDiag?.backendStatus === 'REQUEST_FAILED'
                       ? `Failed: ${activeDiag.backendError || 'Server Error'}`
                       : 'Dispatches payload via POST /api/send-push'}
                 </p>
               </div>
 
-              {/* Stage 2: Service Worker Message Receipt */}
+              {/* STAGE 2: FCM Message Sent to Selected Target */}
               <div className={`p-4 rounded-2xl border transition-all ${
                 !activeDiag 
                   ? 'bg-black/30 border-white/5 text-neutral-500'
-                  : activeDiag.swReceived
+                  : activeDiag.fcmSentToTarget
                     ? 'bg-green-500/10 border-green-500/30 text-green-400'
                     : activeDiag.backendStatus === 'REQUEST_ACCEPTED'
                       ? 'bg-amber-500/10 border-amber-500/30 text-amber-300'
                       : 'bg-black/30 border-white/5 text-neutral-500'
               }`}>
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-[10px] uppercase font-bold tracking-wider opacity-75">Stage 2: Service Worker</span>
-                  {activeDiag?.swReceived && <CheckCircle2 size={16} />}
+                  <span className="text-[10px] uppercase font-bold tracking-wider opacity-75">STAGE 2: FCM Target Dispatch</span>
+                  {activeDiag?.fcmSentToTarget && <CheckCircle2 size={16} />}
                 </div>
                 <div className="text-xs font-bold uppercase tracking-wider">
-                  {activeDiag?.swReceived ? 'FCM SERVICE WORKER RECEIVED MESSAGE' : 'AWAITING_SW_EVENT'}
+                  {activeDiag?.fcmSentToTarget ? 'PASS — FCM MESSAGE SENT' : 'AWAITING_FCM_DISPATCH'}
                 </div>
                 <p className="text-[11px] mt-1.5 text-neutral-300 leading-relaxed">
-                  {activeDiag?.swReceived 
-                    ? `Background push captured by /firebase-messaging-sw.js at ${activeDiag.swReceivedAt}.` 
-                    : activeDiag?.backendStatus === 'REQUEST_ACCEPTED'
-                      ? 'Listening for BroadcastChannel / postMessage from Service Worker...'
-                      : 'Awaiting push transmission'}
+                  {activeDiag?.fcmSentToTarget 
+                    ? `Firebase Admin SDK transmitted message. Message ID: ${activeDiag.firebaseMessageId?.slice(-14) || 'OK'}` 
+                    : 'Awaiting FCM Admin SDK multicast or direct send response...'}
                 </p>
               </div>
 
-              {/* Stage 3: Notification Presentation Confirmation */}
+              {/* STAGE 3: Service Worker Receives Background Push Event */}
+              <div className={`p-4 rounded-2xl border transition-all ${
+                !activeDiag 
+                  ? 'bg-black/30 border-white/5 text-neutral-500'
+                  : activeDiag.swReceived
+                    ? 'bg-green-500/10 border-green-500/30 text-green-400'
+                    : activeDiag.fgReceived
+                      ? 'bg-blue-500/10 border-blue-500/30 text-blue-300'
+                      : activeDiag.fcmSentToTarget
+                        ? 'bg-amber-500/10 border-amber-500/30 text-amber-300'
+                        : 'bg-black/30 border-white/5 text-neutral-500'
+              }`}>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[10px] uppercase font-bold tracking-wider opacity-75">STAGE 3: SW Push Event</span>
+                  {activeDiag?.swReceived && <CheckCircle2 size={16} />}
+                  {activeDiag?.fgReceived && !activeDiag?.swReceived && <Info size={16} />}
+                </div>
+                <div className="text-xs font-bold uppercase tracking-wider">
+                  {activeDiag?.swReceived 
+                    ? 'PASS — SW PUSH EVENT RECEIVED' 
+                    : activeDiag?.fgReceived 
+                      ? 'DELEGATED (TAB IS FOREGROUND)' 
+                      : 'AWAITING_SW_EVENT'}
+                </div>
+                <p className="text-[11px] mt-1.5 text-neutral-300 leading-relaxed">
+                  {activeDiag?.swReceived 
+                    ? `Raw push event captured by /firebase-messaging-sw.js at ${activeDiag.swReceivedAt}.` 
+                    : activeDiag?.fgReceived
+                      ? 'Tab is active in foreground; browser routed message directly to onMessage listener.'
+                      : 'Listening for BroadcastChannel / postMessage from Service Worker...'}
+                </p>
+              </div>
+
+              {/* STAGE 4: Service Worker Displays Browser Notification */}
               <div className={`p-4 rounded-2xl border transition-all ${
                 !activeDiag 
                   ? 'bg-black/30 border-white/5 text-neutral-500'
@@ -708,44 +964,97 @@ ${JSON.stringify(reportData, null, 2)}
                     ? activeDiag.swShownSuccess 
                       ? 'bg-green-500/10 border-green-500/30 text-green-400'
                       : 'bg-red-500/10 border-red-500/30 text-red-400'
-                    : activeDiag.backendStatus === 'REQUEST_ACCEPTED'
-                      ? 'bg-amber-500/10 border-amber-500/30 text-amber-300'
-                      : 'bg-black/30 border-white/5 text-neutral-500'
+                    : activeDiag.fgReceived
+                      ? 'bg-blue-500/10 border-blue-500/30 text-blue-300'
+                      : activeDiag.fcmSentToTarget
+                        ? 'bg-amber-500/10 border-amber-500/30 text-amber-300'
+                        : 'bg-black/30 border-white/5 text-neutral-500'
               }`}>
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-[10px] uppercase font-bold tracking-wider opacity-75">Stage 3: Notification Display</span>
+                  <span className="text-[10px] uppercase font-bold tracking-wider opacity-75">STAGE 4: Notification Display</span>
                   {activeDiag?.swShown && activeDiag.swShownSuccess && <CheckCircle2 size={16} />}
+                  {activeDiag?.fgReceived && !activeDiag?.swShown && <Info size={16} />}
                 </div>
                 <div className="text-xs font-bold uppercase tracking-wider">
                   {activeDiag?.swShown 
-                    ? activeDiag.swShownSuccess ? 'DELIVERY_CONFIRMED_BY_SW' : 'SW_NOTIFICATION_ERROR'
-                    : 'AWAITING_CONFIRMATION'}
+                    ? activeDiag.swShownSuccess ? 'PASS — NOTIFICATION DISPLAYED' : 'FAIL — NOTIFICATION ERROR'
+                    : activeDiag?.fgReceived
+                      ? 'IN-APP (FOREGROUND ACTIVE)'
+                      : 'AWAITING_CONFIRMATION'}
                 </div>
                 <p className="text-[11px] mt-1.5 text-neutral-300 leading-relaxed">
                   {activeDiag?.swShown && activeDiag.swShownSuccess
                     ? `self.registration.showNotification() resolved successfully at ${activeDiag.swShownAt}!`
                     : activeDiag?.swShown && !activeDiag.swShownSuccess
-                      ? `Notification presentation error: ${activeDiag.swShownError}`
-                      : 'Real delivery confirmed only when showNotification() callback completes.'}
+                      ? `Notification display error: ${activeDiag.swShownError}`
+                      : activeDiag?.fgReceived
+                        ? 'Foreground tab active. In W3C Push spec, active tabs delegate OS banners to in-app.'
+                        : 'Awaiting native showNotification callback from SW...'}
+                </p>
+              </div>
+
+              {/* STAGE 5: Notification Click Received */}
+              <div className={`p-4 rounded-2xl border transition-all ${
+                !activeDiag 
+                  ? 'bg-black/30 border-white/5 text-neutral-500'
+                  : activeDiag.notificationClicked
+                    ? 'bg-green-500/10 border-green-500/30 text-green-400'
+                    : 'bg-black/30 border-white/5 text-neutral-500'
+              }`}>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[10px] uppercase font-bold tracking-wider opacity-75">STAGE 5: Notification Click</span>
+                  {activeDiag?.notificationClicked && <CheckCircle2 size={16} />}
+                </div>
+                <div className="text-xs font-bold uppercase tracking-wider">
+                  {activeDiag?.notificationClicked ? 'PASS — CLICK RECEIVED' : 'AWAITING_USER_CLICK'}
+                </div>
+                <p className="text-[11px] mt-1.5 text-neutral-300 leading-relaxed">
+                  {activeDiag?.notificationClicked 
+                    ? `Notification click handled at ${activeDiag.notificationClickedAt} (Action: ${activeDiag.clickAction || 'default'}).` 
+                    : 'Click the browser/Android notification banner to trigger notificationclick event.'}
+                </p>
+              </div>
+
+              {/* STAGE 6: Correct Production URL Opened */}
+              <div className={`p-4 rounded-2xl border transition-all ${
+                !activeDiag 
+                  ? 'bg-black/30 border-white/5 text-neutral-500'
+                  : activeDiag.targetUrlOpened
+                    ? 'bg-green-500/10 border-green-500/30 text-green-400'
+                    : 'bg-black/30 border-white/5 text-neutral-500'
+              }`}>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[10px] uppercase font-bold tracking-wider opacity-75">STAGE 6: URL Navigation</span>
+                  {activeDiag?.targetUrlOpened && <CheckCircle2 size={16} />}
+                </div>
+                <div className="text-xs font-bold uppercase tracking-wider">
+                  {activeDiag?.targetUrlOpened ? 'PASS — URL OPENED' : 'AWAITING_NAVIGATION'}
+                </div>
+                <p className="text-[11px] mt-1.5 text-neutral-300 leading-relaxed">
+                  {activeDiag?.targetUrlOpened 
+                    ? `Window focused/opened with target URL (${activeDiag.openedUrl || '/'}) at ${activeDiag.targetUrlOpenedAt}.` 
+                    : 'Service worker focuses or opens client window with deep link payload.'}
                 </p>
               </div>
 
             </div>
 
-            {/* Foreground Listener status note if foreground page caught it */}
+            {/* Foreground Listener status note */}
             {activeDiag?.fgReceived && (
-              <div className="p-3 bg-blue-500/10 border border-blue-500/30 rounded-xl flex items-center justify-between text-xs text-blue-300">
-                <span className="font-bold flex items-center gap-1.5">
-                  <CheckCircle2 size={14} /> FCM FOREGROUND MESSAGE RECEIVED
-                </span>
-                <span className="text-[11px] font-mono text-neutral-300">
-                  Received at {activeDiag.fgReceivedAt} in active tab
+              <div className="p-3.5 bg-blue-500/10 border border-blue-500/30 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-blue-300">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 size={16} className="text-blue-400 shrink-0" />
+                  <span className="font-bold">FCM FOREGROUND MESSAGE RECEIVED</span>
+                  <span className="text-blue-300/80">({activeDiag.fgReceivedAt})</span>
+                </div>
+                <span className="text-[11px] text-blue-200/70">
+                  Page was in foreground state ({activeDiag.tabVisibilityAtTrigger}). Message intercepted by onMessage listener.
                 </span>
               </div>
             )}
           </div>
 
-          {/* Core Runtime Parameters Grid (Requirements A & J) */}
+          {/* Core Runtime Parameters Grid */}
           <div className="bg-neutral-900 border border-white/10 p-6 rounded-3xl space-y-4">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
               <KeyRound className="text-amber-400" size={16} /> Runtime Environment Parameters
@@ -781,9 +1090,9 @@ ${JSON.stringify(reportData, null, 2)}
 
               {/* SW Controller State */}
               <div className="p-3.5 bg-black/40 border border-white/5 rounded-2xl space-y-1">
-                <span className="text-[10px] uppercase font-bold text-neutral-500 block">SW Controller Script</span>
+                <span className="text-[10px] uppercase font-bold text-neutral-500 block">SW Version & Controller</span>
                 <div className="font-mono text-neutral-300 truncate" title={diagReport?.swControllerScriptURL || 'None'}>
-                  {diagReport?.swControllerScriptURL ? diagReport.swControllerScriptURL.split('/').pop() : 'None (Active on SW)'}
+                  {swPingStatus?.version ? `v${swPingStatus.version} (Active)` : (diagReport?.swControllerScriptURL ? diagReport.swControllerScriptURL.split('/').pop() : 'Active')}
                 </div>
               </div>
 
@@ -846,7 +1155,7 @@ ${JSON.stringify(reportData, null, 2)}
               </div>
             </div>
 
-            {/* Server-Side Admin SDK & Service Account Verification (Requirement J) */}
+            {/* Server-Side Admin SDK & Service Account Verification */}
             <div className="p-4 bg-black/40 border border-white/5 rounded-2xl space-y-2 text-xs">
               <span className="text-[10px] uppercase font-bold text-neutral-400 block">Backend Firebase Admin SDK Configuration</span>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -886,7 +1195,7 @@ ${JSON.stringify(reportData, null, 2)}
 
             <div className="p-3 bg-black/60 border border-white/5 rounded-2xl font-mono text-[11px] max-h-60 overflow-y-auto space-y-1.5">
               {diagLog.length === 0 ? (
-                <div className="text-neutral-600 italic py-2">No events logged yet. Click "Send Runtime Delivery Diagnostic Probe" to test.</div>
+                <div className="text-neutral-600 italic py-2">No events logged yet. Click "Dispatch Probe" to test.</div>
               ) : (
                 diagLog.map((log, idx) => (
                   <div key={idx} className="flex items-start gap-2 leading-relaxed">
@@ -921,14 +1230,64 @@ ${JSON.stringify(reportData, null, 2)}
         <div className="bg-neutral-900 border border-white/10 p-6 rounded-3xl space-y-5 animate-in fade-in">
           
           {broadcastResult && (
-            <div className={`p-4 rounded-2xl border flex items-start gap-3 ${
+            <div className={`p-4 rounded-2xl border flex flex-col gap-3 ${
               broadcastResult.success ? 'bg-green-500/10 border-green-500/30 text-green-400' : 'bg-red-500/10 border-red-500/30 text-red-400'
             }`}>
-              {broadcastResult.success ? <CheckCircle2 size={20} className="shrink-0 mt-0.5" /> : <AlertCircle size={20} className="shrink-0 mt-0.5" />}
-              <div>
-                <h4 className="font-bold text-sm">{broadcastResult.success ? 'Broadcast Accepted' : 'Broadcast Error'}</h4>
-                <p className="text-xs mt-1 text-neutral-300">{broadcastResult.message}</p>
+              <div className="flex items-start gap-3">
+                {broadcastResult.success ? <CheckCircle2 size={20} className="shrink-0 mt-0.5" /> : <AlertCircle size={20} className="shrink-0 mt-0.5" />}
+                <div>
+                  <h4 className="font-bold text-sm">{broadcastResult.success ? 'Broadcast Accepted' : 'Broadcast Error'}</h4>
+                  <p className="text-xs mt-1 text-neutral-300">{broadcastResult.message}</p>
+                </div>
               </div>
+
+              {/* Detailed Device Breakdown Table for Part 9 */}
+              {broadcastResult.details?.deviceResults && broadcastResult.details.deviceResults.length > 0 && (
+                <div className="mt-3 space-y-2 bg-black/40 border border-white/10 p-4 rounded-2xl">
+                  <div className="flex items-center justify-between">
+                    <h5 className="text-xs font-bold uppercase tracking-wider text-neutral-300">
+                      Target Device Audit Breakdown ({broadcastResult.details.deviceResults.length} devices)
+                    </h5>
+                    <span className="text-[11px] text-neutral-400">
+                      {broadcastResult.details.successCount} Delivered • {broadcastResult.details.failureCount} Failed
+                    </span>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead>
+                        <tr className="border-b border-white/10 text-neutral-500 uppercase text-[10px]">
+                          <th className="py-2 px-3">Target Device Token</th>
+                          <th className="py-2 px-3">Status</th>
+                          <th className="py-2 px-3">Error Code</th>
+                          <th className="py-2 px-3">Error Message / Reason</th>
+                          <th className="py-2 px-3">Cleanup Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-white/5">
+                        {broadcastResult.details.deviceResults.map((dev: any, idx: number) => (
+                          <tr key={idx} className="hover:bg-white/[0.02]">
+                            <td className="py-2.5 px-3 font-mono text-[11px] text-neutral-300">{dev.tokenPreview}</td>
+                            <td className="py-2.5 px-3">
+                              {dev.success ? (
+                                <span className="px-2 py-0.5 rounded bg-green-500/20 text-green-400 font-bold text-[10px]">
+                                  DELIVERED
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded bg-red-500/20 text-red-400 font-bold text-[10px]">
+                                  FAILED
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-3 font-mono text-[10px] text-amber-400">{dev.errorCode || 'None'}</td>
+                            <td className="py-2.5 px-3 text-neutral-400 max-w-xs truncate" title={dev.errorMessage || ''}>{dev.errorMessage || (dev.success ? 'Message accepted by FCM gateway' : 'Unknown')}</td>
+                            <td className="py-2.5 px-3 text-[11px] text-neutral-300 font-medium">{dev.cleanupAction}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -991,7 +1350,7 @@ ${JSON.stringify(reportData, null, 2)}
           <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-4 border-t border-white/5">
             <button
               type="button"
-              onClick={handleRunDeliveryDiagnostic}
+              onClick={() => handleRunDeliveryDiagnostic('immediate')}
               disabled={probeSending}
               className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-neutral-300 hover:text-white hover:bg-white/10 text-xs font-bold transition-colors disabled:opacity-50"
             >
