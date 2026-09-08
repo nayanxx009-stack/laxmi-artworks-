@@ -81,5 +81,13 @@ service cloud.firestore {
       allow read: if true;
       allow write: if isAdmin();
     }
+
+    match /notification_logs/{logId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /notification_preferences/{userId} {
+      allow read, write: if (isSignedIn() && request.auth.uid == userId) || isAdmin();
+    }
   }
 }

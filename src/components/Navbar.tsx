@@ -1,15 +1,17 @@
 import { motion, AnimatePresence } from 'motion/react';
-import { Menu, X, User as UserIcon, LogOut, Clock, MessageSquare } from 'lucide-react';
+import { Menu, X, User as UserIcon, LogOut, Clock, MessageSquare, Bell } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useAuth } from '../lib/auth';
 import { useLanguage } from '../lib/LanguageContext';
 import InquiryStatusModal from './InquiryStatusModal';
+import NotificationPreferencesModal from './NotificationPreferencesModal';
 import { useNavigate } from 'react-router-dom';
 
 export default function Navbar() {
   const [isScrolled, setIsScrolled] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [isStatusModalOpen, setIsStatusModalOpen] = useState(false);
+  const [isNotificationPrefsOpen, setIsNotificationPrefsOpen] = useState(false);
   const { user, logout } = useAuth();
   const [userDropdownOpen, setUserDropdownOpen] = useState(false);
   const navigate = useNavigate();
@@ -19,11 +21,16 @@ export default function Navbar() {
       setIsScrolled(window.scrollY > 50);
     };
     const handleOpenStatus = () => setIsStatusModalOpen(true);
+    const handleOpenPrefs = () => setIsNotificationPrefsOpen(true);
+
     window.addEventListener('scroll', handleScroll);
     window.addEventListener('open-status-modal', handleOpenStatus);
+    window.addEventListener('open-notification-preferences', handleOpenPrefs);
+
     return () => {
       window.removeEventListener('scroll', handleScroll);
       window.removeEventListener('open-status-modal', handleOpenStatus);
+      window.removeEventListener('open-notification-preferences', handleOpenPrefs);
     };
   }, []);
 
@@ -84,6 +91,15 @@ export default function Navbar() {
                     <p className="text-xs font-bold text-white truncate">{user.displayName}</p>
                     <p className="text-[10px] text-neutral-500 truncate mt-0.5">{user.email}</p>
                   </div>
+                  <button 
+                    onClick={() => {
+                      setIsNotificationPrefsOpen(true);
+                      setUserDropdownOpen(false);
+                    }}
+                    className="w-full text-left px-4 py-2.5 text-xs font-semibold uppercase tracking-widest text-neutral-300 hover:text-white hover:bg-white/5 transition-colors flex items-center gap-2 border-b border-white/5"
+                  >
+                    <Bell size={14} className="text-amber-500" /> Preferences
+                  </button>
                   <button 
                     onClick={() => {
                       logout();
@@ -200,6 +216,7 @@ export default function Navbar() {
       </AnimatePresence>
     </nav>
     <InquiryStatusModal isOpen={isStatusModalOpen} onClose={() => setIsStatusModalOpen(false)} />
+    <NotificationPreferencesModal isOpen={isNotificationPrefsOpen} onClose={() => setIsNotificationPrefsOpen(false)} />
     </>
   );
 }

@@ -11,7 +11,7 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
 import { initializeApp as initAdmin, cert, getApps } from 'firebase-admin/app';
 import { getMessaging } from 'firebase-admin/messaging';
-import { getFirestore, query, collection, where, getDocs, getDoc, updateDoc, doc, setDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
+import { getFirestore, query, collection, where, getDocs, getDoc, updateDoc, doc, setDoc, deleteDoc, onSnapshot, orderBy, limit } from 'firebase/firestore';
 
 
 // Initialize Firebase Admin
@@ -317,6 +317,32 @@ async function startServer() {
           }
         });
         console.log(`[Push Watcher] Success: ${response.successCount}, Failures: ${response.failureCount}`);
+
+        // Log automated notification to notification_logs
+        try {
+          const logId = `order_auto_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+          const extractedOrderId = url && url.includes('orderId=') ? url.split('orderId=')[1]?.split('&')[0] : null;
+          await setDoc(doc(db, 'notification_logs', logId), {
+            notificationId: logId,
+            type: title.toLowerCase().includes('payment') ? 'payment' : 'order',
+            audienceType: 'individual',
+            createdAt: Date.now(),
+            createdBy: 'system (order automation)',
+            title,
+            body,
+            iconUrl: '/icon-192.png',
+            imageUrl: null,
+            clickUrl: url || '/',
+            targetUserIds: userId ? [userId] : [],
+            targetDeviceCount: tokenList.length,
+            successCount: response.successCount,
+            failureCount: response.failureCount,
+            status: response.failureCount === 0 ? 'SENT' : (response.successCount > 0 ? 'PARTIAL_FAILURE' : 'FAILED'),
+            orderId: extractedOrderId
+          }, { merge: true });
+        } catch (logErr) {
+          console.error('[Push Watcher] Failed to write notification log:', logErr);
+        }
       } else {
         console.log(`[Push Watcher] No FCM tokens found for user ${userId || email}`);
       }
@@ -990,6 +1016,424 @@ async function startServer() {
     } catch (err: any) {
       console.error('[Push API] FCM Broadcast Error:', err.message);
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Notification Composer API (Professional Admin Multicast with Server Idempotency & Per-Device Breakdown)
+  app.post("/api/admin/send-composed-notification", async (req, res) => {
+    const {
+      notificationId,
+      type = 'general',
+      audienceType = 'all',
+      targetUserIds = [],
+      orderId,
+      title,
+      body,
+      iconUrl = '/icon-192.png',
+      imageUrl,
+      clickUrl = '/',
+      adminEmail = 'admin'
+    } = req.body;
+
+    console.log(`[Composer API] Request received: id=${notificationId}, type=${type}, audience=${audienceType}, orderId=${orderId || 'none'}`);
+
+    if (!getApps().length) {
+      return res.status(500).json({ success: false, error: 'Firebase Admin SDK not initialized on server' });
+    }
+
+    // 1. Core Field Validations
+    if (!title || !title.trim()) {
+      return res.status(400).json({ success: false, error: 'Notification title is required' });
+    }
+    if (!body || !body.trim()) {
+      return res.status(400).json({ success: false, error: 'Notification message body is required' });
+    }
+    if (!notificationId || typeof notificationId !== 'string') {
+      return res.status(400).json({ success: false, error: 'Valid notificationId is required for server idempotency' });
+    }
+
+    // 2. Click Destination Validation & Sanitization
+    let sanitizedClickUrl = '/';
+    if (clickUrl && typeof clickUrl === 'string') {
+      const trimmed = clickUrl.trim();
+      if (trimmed.startsWith('/') && !trimmed.startsWith('//')) {
+        sanitizedClickUrl = trimmed;
+      } else {
+        try {
+          const parsed = new URL(trimmed);
+          if (parsed.protocol === 'https:' && (
+            parsed.hostname.includes('laxmiartworks') || 
+            parsed.hostname.includes('run.app') || 
+            parsed.hostname.includes('localhost')
+          )) {
+            sanitizedClickUrl = parsed.pathname + parsed.search + parsed.hash;
+          } else {
+            return res.status(400).json({ 
+              success: false, 
+              error: 'Invalid click destination. Destination must be an internal Laxmi Artworks route or HTTPS production domain URL.' 
+            });
+          }
+        } catch (e) {
+          sanitizedClickUrl = '/';
+        }
+      }
+    }
+
+    // 3. Server-Side Idempotency Check
+    const notifLogRef = doc(db, 'notification_logs', notificationId);
+    try {
+      const existingLog = await getDoc(notifLogRef);
+      if (existingLog.exists()) {
+        const logData = existingLog.data();
+        if (logData.status === 'SENDING' || logData.status === 'SENT' || logData.status === 'PARTIAL_FAILURE') {
+          console.warn(`[Composer API] Duplicate send attempt prevented for notificationId: ${notificationId}`);
+          return res.status(409).json({
+            success: false,
+            error: 'Duplicate send prevented: This notification has already been processed or is currently in flight.',
+            notificationId,
+            existingStatus: logData.status
+          });
+        }
+      }
+    } catch (e) {
+      // Continue if query fails
+    }
+
+    // Record in-flight status
+    await setDoc(notifLogRef, {
+      notificationId,
+      type,
+      audienceType,
+      title: title.trim(),
+      body: body.trim(),
+      iconUrl: iconUrl || '/icon-192.png',
+      imageUrl: imageUrl ? imageUrl.trim() : null,
+      clickUrl: sanitizedClickUrl,
+      createdAt: Date.now(),
+      createdBy: adminEmail || 'admin',
+      status: 'SENDING',
+      targetDeviceCount: 0,
+      successCount: 0,
+      failureCount: 0,
+      orderId: orderId || null
+    }, { merge: true });
+
+    try {
+      const tokens = new Set<string>();
+      const resolvedUserIds = new Set<string>();
+      const userTokensMap = new Map<string, string[]>();
+
+      // 4. Target User & Device Resolution
+      if (type === 'order' && orderId) {
+        // Look up order in Firestore to strictly lock recipient to the order owner
+        let orderDoc = await getDoc(doc(db, 'orders', orderId));
+        let orderData = orderDoc.exists() ? orderDoc.data() : null;
+
+        // If not found by doc id, search by orderId field
+        if (!orderData) {
+          const qOrder = query(collection(db, 'orders'), where('orderId', '==', orderId), limit(1));
+          const qSnap = await getDocs(qOrder);
+          if (!qSnap.empty) {
+            orderDoc = qSnap.docs[0];
+            orderData = orderDoc.data();
+          }
+        }
+
+        if (!orderData) {
+          await updateDoc(notifLogRef, { status: 'FAILED', error: `Order #${orderId} does not exist.` });
+          return res.status(404).json({ success: false, error: `Order #${orderId} was not found.` });
+        }
+
+        const ownerId = orderData.userId;
+        const ownerEmail = orderData.email;
+        if (ownerId) resolvedUserIds.add(ownerId);
+
+        // Fetch owner tokens
+        if (ownerId && ownerId !== 'guest') {
+          try {
+            const subCol = await getDocs(collection(db, 'users', ownerId, 'notificationTokens'));
+            subCol.forEach(d => {
+              const dt = d.data();
+              if (dt.token && dt.enabled !== false) tokens.add(dt.token);
+            });
+            const fcmDoc = await getDocs(query(collection(db, 'fcm_tokens'), where('userId', '==', ownerId)));
+            fcmDoc.forEach(d => {
+              const dt = d.data();
+              if (Array.isArray(dt.tokens)) dt.tokens.forEach((t: string) => tokens.add(t));
+              else if (dt.token) tokens.add(dt.token);
+            });
+          } catch (e) {}
+        }
+        if (ownerEmail) {
+          try {
+            const fcmEmailDoc = await getDocs(query(collection(db, 'fcm_tokens'), where('email', '==', ownerEmail.toLowerCase())));
+            fcmEmailDoc.forEach(d => {
+              const dt = d.data();
+              if (Array.isArray(dt.tokens)) dt.tokens.forEach((t: string) => tokens.add(t));
+              else if (dt.token) tokens.add(dt.token);
+            });
+          } catch (e) {}
+        }
+      } else if (audienceType === 'individual' || audienceType === 'selected') {
+        const uids: string[] = Array.isArray(targetUserIds) ? targetUserIds : [targetUserIds];
+        for (const uId of uids) {
+          if (!uId) continue;
+          resolvedUserIds.add(uId);
+          const uTokens: string[] = [];
+
+          // Query users/{uId}/notificationTokens
+          try {
+            const subCol = await getDocs(collection(db, 'users', uId, 'notificationTokens'));
+            subCol.forEach(d => {
+              const dt = d.data();
+              if (dt.token && dt.enabled !== false) {
+                tokens.add(dt.token);
+                uTokens.push(dt.token);
+              }
+            });
+          } catch (e) {}
+
+          // Query fcm_tokens where userId == uId
+          try {
+            const fcmDoc = await getDocs(query(collection(db, 'fcm_tokens'), where('userId', '==', uId)));
+            fcmDoc.forEach(d => {
+              const dt = d.data();
+              if (Array.isArray(dt.tokens)) {
+                dt.tokens.forEach((t: string) => { tokens.add(t); uTokens.push(t); });
+              } else if (dt.token) {
+                tokens.add(dt.token);
+                uTokens.push(dt.token);
+              }
+            });
+          } catch (e) {}
+
+          userTokensMap.set(uId, uTokens);
+        }
+      } else {
+        // audienceType === 'all'
+        try {
+          const fcmSnap = await getDocs(collection(db, 'fcm_tokens'));
+          fcmSnap.forEach(d => {
+            const dt = d.data();
+            const uId = dt.userId || d.id;
+            if (uId) resolvedUserIds.add(uId);
+            if (Array.isArray(dt.tokens)) {
+              dt.tokens.forEach((t: string) => tokens.add(t));
+            } else if (dt.token) {
+              tokens.add(dt.token);
+            }
+          });
+        } catch (e) {}
+      }
+
+      // 5. User Notification Preferences Check (Respect Promotional Opt-Out)
+      if (type === 'promotion') {
+        const optedOutTokens = new Set<string>();
+        for (const uId of resolvedUserIds) {
+          try {
+            const prefDoc = await getDoc(doc(db, 'notification_preferences', uId));
+            if (prefDoc.exists() && prefDoc.data().promotions === false) {
+              console.log(`[Composer API] User ${uId} has opted out of promotional push notifications.`);
+              const userTokens = userTokensMap.get(uId) || [];
+              userTokens.forEach(t => optedOutTokens.add(t));
+            }
+          } catch (e) {}
+        }
+        optedOutTokens.forEach(t => tokens.delete(t));
+      }
+
+      const tokenList = Array.from(tokens);
+      if (!tokenList.length) {
+        await updateDoc(notifLogRef, {
+          status: 'FAILED',
+          targetDeviceCount: 0,
+          successCount: 0,
+          failureCount: 0,
+          error: 'No active device registrations found for target audience.'
+        });
+        return res.status(400).json({
+          success: false,
+          error: 'No active registered device tokens found for the selected audience or users have opted out.',
+          targetDeviceCount: 0
+        });
+      }
+
+      console.log(`[Composer API] Sending to ${tokenList.length} unique active tokens across ${resolvedUserIds.size} users.`);
+
+      // 6. Safe Multicast Batching (Max 500 devices per batch)
+      let totalSuccess = 0;
+      let totalFailure = 0;
+      const deviceResults: any[] = [];
+      const cleanupPromises: Promise<any>[] = [];
+      const BATCH_SIZE = 500;
+
+      for (let i = 0; i < tokenList.length; i += BATCH_SIZE) {
+        const batchTokens = tokenList.slice(i, i + BATCH_SIZE);
+        const multicastMessage: any = {
+          tokens: batchTokens,
+          notification: {
+            title: title.trim(),
+            body: body.trim()
+          },
+          data: {
+            title: title.trim(),
+            body: body.trim(),
+            url: sanitizedClickUrl,
+            click_action: sanitizedClickUrl,
+            notificationId,
+            type
+          },
+          webpush: {
+            headers: { Urgency: 'high' },
+            notification: {
+              title: title.trim(),
+              body: body.trim(),
+              icon: iconUrl || '/icon-192.png',
+              badge: '/icon-192.png',
+              ...(imageUrl ? { image: imageUrl.trim() } : {}),
+              requireInteraction: false
+            },
+            fcmOptions: {
+              link: sanitizedClickUrl
+            }
+          }
+        };
+
+        const response = await getMessaging().sendEachForMulticast(multicastMessage);
+        totalSuccess += response.successCount;
+        totalFailure += response.failureCount;
+
+        for (let idx = 0; idx < batchTokens.length; idx++) {
+          const targetToken = batchTokens[idx];
+          const resp = response.responses[idx];
+          const tokenPreview = targetToken.length > 16
+            ? `${targetToken.substring(0, 8)}...${targetToken.substring(targetToken.length - 6)}`
+            : targetToken;
+
+          let cleanupAction = 'Active (No cleanup needed)';
+          const errorCode = resp.error?.code || null;
+          const errorMessage = resp.error?.message || null;
+
+          if (!resp.success) {
+            if (errorCode === 'messaging/invalid-registration-token' ||
+                errorCode === 'messaging/registration-token-not-registered') {
+              cleanupAction = 'Stale registration cleaned up from Firestore';
+              cleanupPromises.push((async () => {
+                try {
+                  const fcmSnap = await getDocs(collection(db, 'fcm_tokens'));
+                  for (const docSnap of fcmSnap.docs) {
+                    const data = docSnap.data();
+                    if (data.tokens && data.tokens.includes(targetToken)) {
+                      const filtered = data.tokens.filter((t: string) => t !== targetToken);
+                      await updateDoc(doc(db, 'fcm_tokens', docSnap.id), { tokens: filtered });
+                    } else if (data.token === targetToken) {
+                      await deleteDoc(doc(db, 'fcm_tokens', docSnap.id));
+                    }
+                  }
+                } catch (e) {}
+              })());
+            } else if (errorCode === 'messaging/mismatched-credential') {
+              cleanupAction = 'Config mismatch (Sender ID / Project ID mismatch)';
+            } else if (errorCode === 'messaging/invalid-argument') {
+              cleanupAction = 'Payload format invalid or target malformed';
+            } else {
+              cleanupAction = 'Delivery failure logged';
+            }
+          }
+
+          deviceResults.push({
+            token: targetToken,
+            tokenPreview,
+            success: resp.success,
+            messageId: resp.messageId || null,
+            errorCode,
+            errorMessage,
+            cleanupAction,
+            timestamp: Date.now()
+          });
+        }
+      }
+
+      await Promise.allSettled(cleanupPromises);
+
+      const finalStatus = totalFailure === 0 ? 'SENT' : (totalSuccess > 0 ? 'PARTIAL_FAILURE' : 'FAILED');
+
+      // 7. Persist Canonical Delivery Log to Firestore
+      await updateDoc(notifLogRef, {
+        status: finalStatus,
+        targetUserIds: Array.from(resolvedUserIds),
+        targetDeviceCount: tokenList.length,
+        successCount: totalSuccess,
+        failureCount: totalFailure,
+        deviceResults: deviceResults.slice(0, 100),
+        completedAt: Date.now()
+      });
+
+      console.log(`[Composer API] Finished: status=${finalStatus}, devices=${tokenList.length}, success=${totalSuccess}, failed=${totalFailure}`);
+
+      res.json({
+        success: true,
+        notificationId,
+        status: finalStatus,
+        targetDeviceCount: tokenList.length,
+        successCount: totalSuccess,
+        failureCount: totalFailure,
+        deviceResults
+      });
+
+    } catch (err: any) {
+      console.error('[Composer API] Critical execution error:', err);
+      await updateDoc(notifLogRef, { status: 'FAILED', error: err.message });
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Admin Notification History Endpoint
+  app.get("/api/admin/notification-logs", async (req, res) => {
+    try {
+      const qLogs = query(collection(db, 'notification_logs'), orderBy('createdAt', 'desc'), limit(50));
+      const snap = await getDocs(qLogs);
+      const logs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      res.json({ success: true, logs });
+    } catch (err: any) {
+      console.error('[Notification History API] Error:', err.message);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // User Notification Preferences Endpoints
+  app.get("/api/notification-preferences/:userId", async (req, res) => {
+    const { userId } = req.params;
+    try {
+      const pDoc = await getDoc(doc(db, 'notification_preferences', userId));
+      if (pDoc.exists()) {
+        res.json({ success: true, preferences: pDoc.data() });
+      } else {
+        res.json({
+          success: true,
+          preferences: { orders: true, payments: true, promotions: true, general: true }
+        });
+      }
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  app.post("/api/notification-preferences/:userId", async (req, res) => {
+    const { userId } = req.params;
+    const { orders = true, payments = true, promotions = true, general = true } = req.body;
+    try {
+      const payload = {
+        orders: Boolean(orders),
+        payments: Boolean(payments),
+        promotions: Boolean(promotions),
+        general: Boolean(general),
+        updatedAt: Date.now()
+      };
+      await setDoc(doc(db, 'notification_preferences', userId), payload, { merge: true });
+      res.json({ success: true, preferences: payload });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
     }
   });
 

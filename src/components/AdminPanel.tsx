@@ -8,13 +8,14 @@ import { auth, googleProvider, db, storage } from '../lib/firebase';
 import { collection, getDocs, doc, updateDoc, deleteDoc, query, orderBy, setDoc, getDoc, limit, onSnapshot } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import jsPDF from 'jspdf';
-import { Shield, Truck, Download, LogOut, CheckCircle2, Clock, XCircle, Trash2, Edit2, Save, X, RefreshCw, Eye, LayoutDashboard, Settings, Users, ArrowRight, Paintbrush, Loader2, Link2, Lock, Plus, Image as ImageIcon, Mail, MessageSquare, IndianRupee, UploadCloud } from 'lucide-react';
+import { Shield, Truck, Download, LogOut, CheckCircle2, Clock, XCircle, Trash2, Edit2, Save, X, RefreshCw, Eye, LayoutDashboard, Settings, Users, ArrowRight, Paintbrush, Loader2, Link2, Lock, Plus, Image as ImageIcon, Mail, MessageSquare, IndianRupee, UploadCloud, Bell } from 'lucide-react';
 import AdminAnalytics from './AdminAnalytics';
 import AdminBackup from './AdminBackup';
 import AdminChat from './AdminChat';
 import AdminInquiries from './AdminInquiries';
 import AdminNotifications from './AdminNotifications';
 import AdminBroadcast from './AdminBroadcast';
+import AdminNotificationManager from './AdminNotificationManager';
 
 
 import { useSiteConfig, defaultSiteConfig, SiteConfig } from '../lib/SiteContext';
@@ -94,7 +95,7 @@ export default function AdminPanel() {
   const [rememberMe, setRememberMe] = useState(false);
   const [loginError, setLoginError] = useState('');
 
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'site' | 'admins' | 'gallery' | 'system'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'site' | 'admins' | 'gallery' | 'popup' | 'notifications' | 'system'>('dashboard');
   
   const [orders, setOrders] = useState<any[]>([]);
   const [dashboardView, setDashboardView] = useState<"orders" | "users" | "subscribers" | "reviews" | "analytics" | "backup" | "coupons" | "chat">("analytics");
@@ -791,6 +792,12 @@ export default function AdminPanel() {
             >
               <MessageSquare size={16} /> Popup Manager
             </button>
+            <button 
+              onClick={() => setActiveTab('notifications')}
+              className={`flex items-center gap-2 px-6 py-3 rounded-full text-sm font-bold transition-all whitespace-nowrap ${activeTab === 'notifications' ? 'bg-amber-500 text-black shadow-lg shadow-amber-500/20' : 'bg-neutral-900 text-neutral-400 hover:text-white hover:bg-neutral-800 border border-white/5'}`}
+            >
+              <Bell size={16} /> Notification Manager
+            </button>
           </div>
         </div>
       </nav>
@@ -1293,6 +1300,19 @@ export default function AdminPanel() {
                 </div>
               )}
             </div>
+          </motion.div>
+        )}
+
+        {/* NOTIFICATION MANAGER TAB */}
+        {activeTab === 'notifications' && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+            <AdminNotificationManager 
+              onOpenDiagnostics={() => {
+                setActiveTab('dashboard');
+                setDashboardView('web-push' as any);
+              }}
+              adminEmail={user?.email || 'admin'}
+            />
           </motion.div>
         )}
       </div>
