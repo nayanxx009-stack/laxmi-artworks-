@@ -44,6 +44,15 @@ export const adminAuth = getAuth(adminApp);
 export const adminDb = db;
 export const adminStorage = getStorage(adminApp);
 export const storage = getStorage(app);
+// Prevent Firebase Storage SDK from hanging up to 10 minutes on failed uploads
+try {
+  storage.maxUploadRetryTime = 12000;
+  storage.maxOperationRetryTime = 12000;
+  adminStorage.maxUploadRetryTime = 12000;
+  adminStorage.maxOperationRetryTime = 12000;
+} catch (e) {
+  console.warn('[Firebase Storage] Notice configuring retry limits:', e);
+}
 
 let messagingInstance: any = null;
 
