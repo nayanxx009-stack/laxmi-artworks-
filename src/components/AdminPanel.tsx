@@ -711,27 +711,47 @@ export default function AdminPanel() {
   };
 
   const executeSavePopup = async (targetImageUrlOverride?: string) => {
-    // 1. Block save if hasPendingNewImage is true but no uploaded URL is available
-    if (hasPendingNewImage) {
-      const urlToUse = targetImageUrlOverride || pendingPopupImageUrl;
-      if (!urlToUse) {
+    const isNewFileFlow = Boolean(hasPendingNewImage || selectedFile);
+
+    // 1. Strict guard: If a new file was selected, it MUST have a fresh uploaded URL before saving can proceed
+    if (isNewFileFlow) {
+      const freshUploadedUrl = targetImageUrlOverride || pendingPopupImageUrl;
+      if (!freshUploadedUrl) {
         setUploadStateMachine('ERROR');
         setPopupSaveFeedback({
           type: 'error',
-          message: '❌ New image has not finished uploading. Please wait for upload to complete or retry.'
+          message: '❌ A new image was selected, but its Firebase Storage upload has not completed. Cannot save until upload finishes. Fallback to previous image is strictly prohibited.'
+        });
+        return;
+      }
+      if (freshUploadedUrl === savedPopupImageUrl || freshUploadedUrl.includes('images.unsplash.com')) {
+        setUploadStateMachine('ERROR');
+        setPopupSaveFeedback({
+          type: 'error',
+          message: '❌ Cannot save: A new file was selected, but the upload returned the old saved image URL. A fresh download URL is required.'
         });
         return;
       }
     }
 
-    // Determine finalImageUrl with strict priority
+    // Determine finalImageUrl with strict priority — NEVER fall back to old Unsplash URL when a new file was selected
     let finalImageUrl = '';
-    if (hasPendingNewImage) {
+    if (isNewFileFlow) {
       finalImageUrl = (targetImageUrlOverride || pendingPopupImageUrl)!;
     } else if (directImageUrlInput.trim() && directImageUrlInput.trim() !== savedPopupImageUrl) {
       finalImageUrl = directImageUrlInput.trim();
     } else {
       finalImageUrl = savedPopupImageUrl;
+    }
+
+    // Double safeguard: If a new file was selected, finalImageUrl must strictly be the new uploaded image
+    if (isNewFileFlow && (!finalImageUrl || finalImageUrl === savedPopupImageUrl || finalImageUrl.includes('images.unsplash.com'))) {
+      setUploadStateMachine('ERROR');
+      setPopupSaveFeedback({
+        type: 'error',
+        message: '❌ Data flow error: A new file was selected, but finalImageUrl fell back to the previous saved URL. Save aborted.'
+      });
+      return;
     }
 
     // 2. Validate popup enabled without image
@@ -832,10 +852,11 @@ export default function AdminPanel() {
 
       setUrlMatch('YES');
       setUploadStateMachine('SUCCESS');
+      const wasNewFile = isNewFileFlow;
       setSavedPopupImageUrl(finalImageUrl);
       setHasPendingNewImage(false);
       setPendingPopupImageUrl(null);
-      if (hasPendingNewImage) {
+      if (wasNewFile) {
         setDirectImageUrlInput(finalImageUrl);
       }
       if (previewObjectUrl) {
@@ -1975,7 +1996,7 @@ export default function AdminPanel() {
                     <button
                       type="button"
                       onClick={() => executeSavePopup()}
-                      disabled={savingPopup || (hasPendingNewImage && !pendingPopupImageUrl) || (popupEnabled && !getActiveDisplayImageUrl())}
+                      disabled={savingPopup || (Boolean(hasPendingNewImage || selectedFile) && !pendingPopupImageUrl) || (popupEnabled && !getActiveDisplayImageUrl())}
                       className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-black font-bold rounded-xl text-xs flex items-center gap-2 transition-colors disabled:opacity-50"
                     >
                       {savingPopup ? <RefreshCw size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
