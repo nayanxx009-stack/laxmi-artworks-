@@ -391,46 +391,50 @@ export default function AdminPanel() {
       return;
     }
 
-    // 2. Validate file size (max 10MB)
-    if (file.size > 10 * 1024 * 1024) {
+    // 2. Validate file size (max 15MB)
+    if (file.size > 15 * 1024 * 1024) {
       setPopupUploadState('error');
-      setPopupUploadMessage('❌ File size exceeds 10MB limit. Please select a smaller image.');
+      setPopupUploadMessage('❌ File size exceeds 15MB limit. Please select a smaller image.');
       setTimeout(() => { setPopupUploadState('idle'); setPopupUploadMessage(''); }, 6000);
       return;
     }
     
     try {
       setPopupUploadState('uploading');
-      setPopupUploadMessage(`Uploading to Firebase Storage (${(file.size / (1024 * 1024)).toFixed(2)} MB)...`);
+      setPopupUploadMessage(`Optimizing image (${(file.size / (1024 * 1024)).toFixed(2)} MB)...`);
       
-      const sanitizedName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
-      const storageRef = ref(storage, `popups/${Date.now()}_${sanitizedName}`);
-      
-      // Upload to Firebase Storage
-      const uploadResult = await uploadBytes(storageRef, file, {
-        contentType: file.type,
-        customMetadata: {
-          uploadedBy: user?.email || 'admin',
-          originalName: file.name
+      // Step A: Compress image to crisp, highly optimized format (<500KB)
+      const compressedDataUrl = await compressImage(file, 1200, 1200, 0.75);
+      let finalImageUrl = compressedDataUrl;
+
+      // Step B: Attempt Firebase Storage if available, otherwise use optimized base64
+      try {
+        const sanitizedName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
+        const storageRef = ref(storage, `popups/${Date.now()}_${sanitizedName}`);
+        const uploadResult = await uploadBytes(storageRef, file, {
+          contentType: file.type,
+          customMetadata: {
+            uploadedBy: user?.email || 'admin',
+            originalName: file.name
+          }
+        });
+        const downloadUrl = await getDownloadURL(uploadResult.ref);
+        if (downloadUrl) {
+          finalImageUrl = downloadUrl;
         }
-      });
-      
-      setPopupUploadState('processing');
-      setPopupUploadMessage('Retrieving download URL from Firebase Storage...');
-      
-      const downloadUrl = await getDownloadURL(uploadResult.ref);
-      if (!downloadUrl) {
-        throw new Error('Failed to retrieve image download URL from Firebase Storage.');
+      } catch (storageErr) {
+        // Firebase Storage bucket may not be configured; gracefully fallback to optimized data URL
+        console.warn("Firebase storage upload unavailable, falling back to optimized image data URL:", storageErr);
       }
       
       setLocalSiteConfig(prev => ({
         ...prev,
-        popupImage: downloadUrl,
-        imageUrl: downloadUrl
+        popupImage: finalImageUrl,
+        imageUrl: finalImageUrl
       }));
       
       setPopupUploadState('success');
-      setPopupUploadMessage('✅ Uploaded to Firebase Storage. Remember to click "Save Popup Config" below.');
+      setPopupUploadMessage('✅ Image loaded and ready! Click "Save Popup Config" below to publish.');
       setTimeout(() => {
         setPopupUploadState('idle');
         setPopupUploadMessage('');
@@ -439,7 +443,7 @@ export default function AdminPanel() {
     } catch (error: any) {
       console.error("Popup upload error:", error);
       setPopupUploadState('error');
-      setPopupUploadMessage('❌ Firebase Storage Error: ' + (error.message || 'Upload failed.'));
+      setPopupUploadMessage('❌ Error loading image: ' + (error.message || 'Upload failed.'));
       
       setTimeout(() => {
         setPopupUploadState('idle');
@@ -1162,7 +1166,7 @@ export default function AdminPanel() {
                 <div className="space-y-4">
                   <div>
                     <div className="flex items-center justify-between mb-1">
-                      <label className="text-xs text-neutral-400 block font-semibold uppercase tracking-wider">Popup Image (Firebase Storage)</label>
+                      <label className="text-xs text-neutral-400 block font-semibold uppercase tracking-wider">Popup Image</label>
                       {localSiteConfig.popupImage && (
                         <button 
                           type="button"

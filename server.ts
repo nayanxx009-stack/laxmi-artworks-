@@ -1437,32 +1437,6 @@ async function startServer() {
     }
   });
 
-  // Admin Save Popup Configuration Endpoint
-  app.post("/api/admin/save-popup-config", async (req, res) => {
-    const { enabled, frequency, imageUrl } = req.body;
-    try {
-      const payload = {
-        enabled: Boolean(enabled),
-        frequency: frequency || 'session',
-        imageUrl: String(imageUrl || '').trim(),
-        popupImage: String(imageUrl || '').trim(),
-        updatedAt: Date.now()
-      };
-      await setDoc(doc(db, 'settings', 'popup'), payload, { merge: true });
-      await setDoc(doc(db, 'settings', 'site_config'), {
-        popupEnabled: payload.enabled,
-        popupFrequency: payload.frequency,
-        popupImage: payload.imageUrl,
-        imageUrl: payload.imageUrl,
-        updatedAt: payload.updatedAt
-      }, { merge: true });
-      res.json({ success: true, savedAt: payload.updatedAt });
-    } catch (err: any) {
-      console.error('[Save Popup API] Error:', err.message);
-      res.status(500).json({ success: false, error: err.message });
-    }
-  });
-  
   app.post("/api/send-invoice", async (req, res) => {
     const { email, order, pdfBase64 } = req.body;
     
