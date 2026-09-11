@@ -1,0 +1,29 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return request.auth != null && (
+        request.auth.token.email == 'nayanxx009@gmail.com' ||
+        request.auth.token.email == 'gargsubhalaxmi@gmail.com' ||
+        request.auth.token.email == 'admin@example.com' ||
+        request.auth.token.email == 'server@laxmiartworks.local'
+      );
+    }
+
+    // Public read for popup images, write restricted to verified admins
+    match /popup-images/{allPaths=**} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Default rule: public read, admin-only write
+    match /{allPaths=**} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+  }
+}
