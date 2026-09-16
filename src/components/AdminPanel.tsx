@@ -809,6 +809,17 @@ export default function AdminPanel() {
         imageUrl: newlyReturnedCloudinarySecureUrl
       }));
 
+      // Invalidate existing session/local popup dismissal flags so the new image displays immediately
+      try {
+        sessionStorage.removeItem('popup_dismissed_url');
+        sessionStorage.removeItem('popup_closed');
+        localStorage.removeItem('popup_once_url');
+        localStorage.removeItem('popup_shown_once');
+        localStorage.removeItem('popup_daily_url');
+        localStorage.removeItem('popup_daily_date');
+        localStorage.removeItem('popup_last_shown');
+      } catch (_) {}
+
       setPopupSaveFeedback({
         type: 'success',
         message: `✓ SUCCESS: Cloudinary image URL verified from Firestore server! Stored URL: ${newlyReturnedCloudinarySecureUrl}`

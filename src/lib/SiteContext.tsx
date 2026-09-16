@@ -12,6 +12,8 @@ export interface SiteConfig {
   imageUrl?: string;
   popupAutoClose?: number;
   popupFrequency?: string;
+  popupUpdatedAt?: number;
+  popupReadSource?: string;
   announcementBanner: string;
   announcementVisible: boolean;
   heroTitle: string;
@@ -40,20 +42,32 @@ export const SiteProvider = ({ children }: { children: ReactNode }) => {
       .then((serverSnap) => {
         if (serverSnap.exists()) {
           const data = serverSnap.data();
-          const serverImg = data.imageUrl || data.popupImage || '';
+          const serverImg = (data.imageUrl || data.popupImage || '').trim();
+          const isEnabled = data.enabled !== undefined 
+            ? Boolean(data.enabled) 
+            : (data.popupEnabled !== undefined ? Boolean(data.popupEnabled) : false);
+          const freq = data.frequency || 'session';
+          
           setConfig(prev => ({
             ...prev,
-            popupEnabled: data.enabled !== undefined ? Boolean(data.enabled) : prev.popupEnabled,
-            popupFrequency: data.frequency || prev.popupFrequency,
-            popupImage: serverImg || prev.popupImage,
-            imageUrl: serverImg || prev.imageUrl
+            popupEnabled: isEnabled,
+            popupFrequency: freq,
+            popupImage: serverImg,
+            imageUrl: serverImg,
+            popupUpdatedAt: data.updatedAt,
+            popupReadSource: 'Firestore server (getDocFromServer)'
           }));
+          console.log('[SiteContext] Fresh server popup loaded:', {
+            enabled: isEnabled,
+            frequency: freq,
+            hasImage: Boolean(serverImg),
+            updatedAt: data.updatedAt
+          });
         }
       })
       .catch((err) => {
-        // Expected fallback when server is unreachable or offline
         if (err.code !== 'unavailable' && !err.message?.includes('offline')) {
-          console.warn("[SiteContext] Notice fetching server popup config:", err);
+          console.warn("[SiteContext] Fresh server popup read notice:", err);
         }
       });
 
@@ -61,14 +75,30 @@ export const SiteProvider = ({ children }: { children: ReactNode }) => {
     const unsubPopup = onSnapshot(doc(db, 'settings', 'popup'), (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
-        const activeImg = data.imageUrl || data.popupImage || '';
-        setConfig(prev => ({
-          ...prev,
-          popupEnabled: data.enabled !== undefined ? Boolean(data.enabled) : prev.popupEnabled,
-          popupFrequency: data.frequency || prev.popupFrequency,
-          popupImage: activeImg || prev.popupImage,
-          imageUrl: activeImg || prev.imageUrl
-        }));
+        const activeImg = (data.imageUrl || data.popupImage || '').trim();
+        const isEnabled = data.enabled !== undefined 
+          ? Boolean(data.enabled) 
+          : (data.popupEnabled !== undefined ? Boolean(data.popupEnabled) : false);
+        const freq = data.frequency || 'session';
+        const source = docSnap.metadata.fromCache 
+          ? 'IndexedDB cache (onSnapshot)' 
+          : 'Firestore server (onSnapshot)';
+
+        setConfig(prev => {
+          // If we already received a newer server read, don't let older cache overwrite
+          if (prev.popupUpdatedAt && data.updatedAt && data.updatedAt < prev.popupUpdatedAt) {
+            return prev;
+          }
+          return {
+            ...prev,
+            popupEnabled: isEnabled,
+            popupFrequency: freq,
+            popupImage: activeImg,
+            imageUrl: activeImg,
+            popupUpdatedAt: data.updatedAt || prev.popupUpdatedAt,
+            popupReadSource: source
+          };
+        });
       }
     }, (error) => {
       if (error.code !== 'unavailable' && !error.message?.includes('offline')) {
@@ -76,7 +106,8 @@ export const SiteProvider = ({ children }: { children: ReactNode }) => {
       }
     });
 
-    // 3. Listen to site_config for general settings (announcement, hero, about) without overwriting canonical popup
+    // 3. Listen to site_config for general settings (announcement, hero, about) ONLY
+    // CRITICAL: settings/popup is the sole source of truth for popup. site_config must NEVER touch popup properties.
     const unsubSite = onSnapshot(doc(db, 'settings', 'site_config'), (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
@@ -86,13 +117,8 @@ export const SiteProvider = ({ children }: { children: ReactNode }) => {
           announcementVisible: data.announcementVisible ?? prev.announcementVisible,
           heroTitle: data.heroTitle ?? prev.heroTitle,
           heroSubtitle: data.heroSubtitle ?? prev.heroSubtitle,
-          aboutText: data.aboutText ?? prev.aboutText,
-          // Only fallback if popup has not been loaded from settings/popup
-          popupEnabled: prev.popupEnabled ?? (data.popupEnabled !== undefined ? Boolean(data.popupEnabled) : undefined),
-          popupFrequency: prev.popupFrequency || data.popupFrequency || 'session',
-          popupImage: prev.popupImage || data.imageUrl || data.popupImage,
-          imageUrl: prev.imageUrl || data.imageUrl || data.popupImage
-        } as SiteConfig));
+          aboutText: data.aboutText ?? prev.aboutText
+        }));
       }
     }, (error) => {
       if (error.code !== 'unavailable' && !error.message?.includes('offline')) {
