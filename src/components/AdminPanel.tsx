@@ -4,9 +4,9 @@ import React, { useState, useEffect, FormEvent, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { User } from 'firebase/auth';
 import { useAuth } from '../lib/auth';
-import { auth, googleProvider, db, storage } from '../lib/firebase';
+import { auth, googleProvider, db } from '../lib/firebase';
 import { collection, getDocs, doc, updateDoc, deleteDoc, query, orderBy, setDoc, getDoc, getDocFromServer, limit, onSnapshot } from 'firebase/firestore';
-import { ref, uploadBytes, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
+import { uploadToCloudinary } from '../lib/cloudinary';
 import jsPDF from 'jspdf';
 import { Shield, Truck, Download, LogOut, CheckCircle2, Clock, XCircle, Trash2, Edit2, Save, X, RefreshCw, Eye, LayoutDashboard, Settings, Users, ArrowRight, Paintbrush, Loader2, Link2, Lock, Plus, Image as ImageIcon, Mail, MessageSquare, IndianRupee, UploadCloud, Bell, AlertCircle } from 'lucide-react';
 import AdminAnalytics from './AdminAnalytics';
@@ -141,7 +141,7 @@ export default function AdminPanel() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadErrorCode, setUploadErrorCode] = useState<string | null>(null);
   const [uploadErrorDetails, setUploadErrorDetails] = useState<{ title: string; explanation: string; action: string } | null>(null);
-  const activeUploadTaskRef = useRef<any>(null);
+  const activeUploadXhrRef = useRef<XMLHttpRequest | null>(null);
   const popupFileInputRef = useRef<HTMLInputElement>(null);
 
   // Diagnostics verification tracking
@@ -187,7 +187,7 @@ export default function AdminPanel() {
           const pData = pSnap.data();
           const activeImg = pData.imageUrl || pData.popupImage || '';
           setSavedPopupImageUrl(activeImg);
-          setDirectImageUrlInput(pData.directImageUrl || activeImg);
+          setDirectImageUrlInput(pData.directImageUrl || (activeImg.startsWith('data:') ? '' : activeImg));
           setPopupEnabled(pData.enabled !== undefined ? Boolean(pData.enabled) : false);
           setPopupFrequency(pData.frequency || 'session');
           setLocalSiteConfig(prev => ({
@@ -437,8 +437,8 @@ export default function AdminPanel() {
   const logPopupStage = (stage: string, payload?: any) => {
     console.log(`[${stage}]`, {
       timestamp: new Date().toISOString(),
-      projectId: "laxmi-artworks",
-      storageBucket: "laxmi-artworks.firebasestorage.app",
+      cloudName: import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || '(Not configured)',
+      uploadPreset: import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET || 'Laxmi_popup',
       ...payload
     });
   };
@@ -454,158 +454,56 @@ export default function AdminPanel() {
         message,
         serverResponse: error?.serverResponse,
       },
-      operation: 'Firebase Storage / Firestore Popup',
-      projectId: "laxmi-artworks",
-      storageBucket: "laxmi-artworks.firebasestorage.app",
+      operation: 'Cloudinary / Firestore Popup',
+      cloudName: import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || '(Not configured)',
+      uploadPreset: import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET || 'Laxmi_popup',
       ...extra
     });
   };
 
-  const mapFirebaseStorageError = (code: string, rawMessage?: string): { title: string; explanation: string; action: string } => {
-    switch (code) {
-      case 'storage/unauthorized':
-        return {
-          title: 'Permission Denied (storage/unauthorized)',
-          explanation: 'The current user does not have permission to write to this Firebase Storage bucket. Storage security rules require authenticated admin privileges.',
-          action: 'Ensure you are signed in with an authorized admin account and check storage.rules.'
-        };
-      case 'storage/unauthenticated':
-        return {
-          title: 'Authentication Required (storage/unauthenticated)',
-          explanation: 'Firebase Storage request was sent without an active authenticated session.',
-          action: 'Log in again via the Admin Sign-in screen.'
-        };
-      case 'storage/quota-exceeded':
-        return {
-          title: 'Storage Quota Exceeded (storage/quota-exceeded)',
-          explanation: 'The storage quota for this Firebase project has been exceeded.',
-          action: 'Review Firebase project billing and storage usage in the Firebase Console.'
-        };
-      case 'storage/retry-limit-exceeded':
-        return {
-          title: 'Upload Timed Out (storage/retry-limit-exceeded)',
-          explanation: 'The upload operation timed out after exceeding the retry limit. The network connection was interrupted or the storage endpoint did not respond.',
-          action: 'Check your network connection, ensure the bucket exists, and click Retry Upload.'
-        };
-      case 'storage/object-not-found':
-        return {
-          title: 'Object Not Found (storage/object-not-found)',
-          explanation: 'The specified storage object does not exist.',
-          action: 'Select a new image and retry the upload.'
-        };
-      case 'storage/bucket-not-found':
-        return {
-          title: 'Bucket Not Found (storage/bucket-not-found)',
-          explanation: 'The Firebase Storage bucket "laxmi-artworks.firebasestorage.app" does not exist or has not been initialized. Under modern Google Cloud Firebase billing policies, Cloud Storage requires the Blaze (Pay-as-you-go) plan.',
-          action: 'Enable Cloud Storage on the Blaze plan or initialize the default storage bucket in the Firebase Console (console.firebase.google.com).'
-        };
-      case 'storage/project-not-found':
-        return {
-          title: 'Project Not Found (storage/project-not-found)',
-          explanation: 'Firebase project "laxmi-artworks" could not be located.',
-          action: 'Verify your Firebase project ID in firebase-blueprint.json.'
-        };
-      case 'storage/canceled':
-        return {
-          title: 'Upload Canceled (storage/canceled)',
-          explanation: 'The upload was canceled by the user or a replacement file was chosen.',
-          action: 'Select a file to start a new upload.'
-        };
-      case 'storage/unknown':
-        return {
-          title: 'Storage Unavailable (storage/unknown)',
-          explanation: `Firebase Storage service returned an unknown error: ${rawMessage || 'Server unreachable'}. This typically indicates that Cloud Storage is not provisioned or requires the Blaze plan for this project.`,
-          action: 'Verify Firebase Storage bucket initialization in Firebase Console.'
-        };
-      default:
-        return {
-          title: `Upload Error (${code || 'storage/error'})`,
-          explanation: rawMessage || 'An unexpected error occurred during storage upload.',
-          action: 'Inspect browser console diagnostics and retry.'
-        };
+  const mapCloudinaryError = (errorMsg: string): { title: string; explanation: string; action: string } => {
+    const msg = errorMsg || '';
+    if (msg.includes('Cloud Name is not configured') || msg.includes('VITE_CLOUDINARY_CLOUD_NAME')) {
+      return {
+        title: 'Cloudinary Cloud Name Missing',
+        explanation: 'The environment variable VITE_CLOUDINARY_CLOUD_NAME is not set. Cloudinary requires your cloud name to upload images.',
+        action: 'Configure VITE_CLOUDINARY_CLOUD_NAME in your environment settings or .env file.'
+      };
     }
-  };
-
-  const uploadNewImage = async (file: File): Promise<string> => {
-    // Unique Storage Path to eliminate CDN and browser caching issues
-    const timestamp = Date.now();
-    const randomId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 9);
-    const sanitizedName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
-    const storagePath = `popup-images/popup-${timestamp}-${randomId}-${sanitizedName}`;
-
-    // Section 7: Log SAFE diagnostics (UID, email, storage bucket, storage path)
-    console.log('[POPUP_AUTH_DIAGNOSTICS]', {
-      currentUserUid: auth.currentUser?.uid || 'anonymous',
-      currentUserEmail: auth.currentUser?.email || 'unauthenticated',
-      storageBucket: storage.app.options.storageBucket || "laxmi-artworks.firebasestorage.app",
-      storagePath
-    });
-
-    logPopupStage('POPUP_UPLOAD_STARTED', {
-      storagePath,
-      fileName: file.name,
-      fileSize: file.size,
-      fileType: file.type
-    });
-
-    const storageRef = ref(storage, storagePath);
-    const metadata = {
-      contentType: file.type,
-      customMetadata: {
-        uploadedBy: auth.currentUser?.email || user?.email || 'admin',
-        originalName: file.name,
-        uploadedAt: new Date().toISOString()
-      }
+    if (msg.includes('Upload preset must be specified') || msg.includes('preset') || msg.includes('whitelist') || msg.includes('Signing Mode')) {
+      return {
+        title: 'Invalid or Missing Upload Preset',
+        explanation: `Cloudinary rejected the unsigned upload preset. Ensure an unsigned upload preset named "${import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET || 'Laxmi_popup'}" exists in your Cloudinary Settings -> Upload presets.`,
+        action: 'In Cloudinary console, go to Settings -> Upload -> Add upload preset, set Signing Mode to "Unsigned", and name it Laxmi_popup.'
+      };
+    }
+    if (msg.includes('File size exceeds') || msg.includes('too large') || msg.includes('larger than')) {
+      return {
+        title: 'File Too Large for Cloudinary',
+        explanation: msg,
+        action: 'Select an image under 15MB or compress it before uploading.'
+      };
+    }
+    if (msg.includes('Network error') || msg.includes('Failed to fetch') || msg.includes('connection')) {
+      return {
+        title: 'Network Connection Error',
+        explanation: 'Could not connect to Cloudinary upload API (api.cloudinary.com).',
+        action: 'Check your internet connection and verify that api.cloudinary.com is reachable.'
+      };
+    }
+    return {
+      title: 'Cloudinary Upload Failed',
+      explanation: msg || 'An error occurred during image upload to Cloudinary.',
+      action: 'Check your Cloudinary cloud name and upload preset settings, then retry.'
     };
-
-    const uploadTask = uploadBytesResumable(storageRef, file, metadata);
-    activeUploadTaskRef.current = uploadTask;
-
-    await new Promise<void>((resolve, reject) => {
-      // 25-second timeout safety
-      const uploadTimeout = setTimeout(() => {
-        try { uploadTask.cancel(); } catch (_) {}
-        const timeoutErr: any = new Error('Firebase Storage upload timed out after 25 seconds.');
-        timeoutErr.code = 'storage/retry-limit-exceeded';
-        reject(timeoutErr);
-      }, 25000);
-
-      uploadTask.on(
-        'state_changed',
-        (snapshot) => {
-          const transferred = snapshot.bytesTransferred;
-          const total = snapshot.totalBytes;
-          const progress = total > 0 ? (transferred / total) * 100 : 0;
-          setBytesTransferred(transferred);
-          setTotalBytes(total);
-          setUploadProgress(Math.round(progress));
-          logPopupStage('POPUP_UPLOAD_PROGRESS', { transferred, total, percent: Math.round(progress) });
-        },
-        (error) => {
-          clearTimeout(uploadTimeout);
-          activeUploadTaskRef.current = null;
-          reject(error);
-        },
-        () => {
-          clearTimeout(uploadTimeout);
-          activeUploadTaskRef.current = null;
-          resolve();
-        }
-      );
-    });
-
-    logPopupStage('POPUP_UPLOAD_SUCCESS', { storagePath });
-    logPopupStage('POPUP_DOWNLOAD_URL_STARTED', { storagePath });
-
-    const downloadUrl = await getDownloadURL(uploadTask.snapshot.ref);
-    if (!downloadUrl) {
-      throw new Error("Upload completed without receiving a download URL");
-    }
-    logPopupStage('POPUP_DOWNLOAD_URL_SUCCESS', { downloadUrl });
-    return downloadUrl;
   };
 
   const startUploadFlow = async (file: File) => {
+    if (activeUploadXhrRef.current) {
+      try { activeUploadXhrRef.current.abort(); } catch (_) {}
+      activeUploadXhrRef.current = null;
+    }
+
     setUploadStateMachine('UPLOADING');
     setUploadProgress(0);
     setBytesTransferred(0);
@@ -615,22 +513,44 @@ export default function AdminPanel() {
     setUploadErrorDetails(null);
     setPopupSaveFeedback(null);
 
+    logPopupStage('CLOUDINARY_UPLOAD_STARTED', {
+      fileName: file.name,
+      fileSize: file.size,
+      fileType: file.type,
+      cloudName: import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || '(Not configured)',
+      uploadPreset: import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET || 'Laxmi_popup'
+    });
+
     try {
-      const downloadUrl = await uploadNewImage(file);
+      const result = await uploadToCloudinary(file, {
+        onProgress: (info) => {
+          setBytesTransferred(info.loaded);
+          setTotalBytes(info.total);
+          setUploadProgress(info.percent);
+          logPopupStage('CLOUDINARY_UPLOAD_PROGRESS', info);
+        },
+        onXhrCreated: (xhr) => {
+          activeUploadXhrRef.current = xhr;
+        }
+      });
+
+      activeUploadXhrRef.current = null;
       setUploadProgress(100);
-      setPendingPopupImageUrl(downloadUrl);
-      setUploadStateMachine('UPLOAD_SUCCESS');
-      // Transition immediately to READY_TO_SAVE
-      setTimeout(() => {
-        setUploadStateMachine('READY_TO_SAVE');
-      }, 250);
+      setPendingPopupImageUrl(result.secure_url);
+      setUploadStateMachine('READY_TO_SAVE');
+
+      logPopupStage('CLOUDINARY_UPLOAD_SUCCESS', {
+        secure_url: result.secure_url,
+        public_id: result.public_id,
+        bytes: result.bytes
+      });
     } catch (err: any) {
-      logPopupError('POPUP_UPLOAD_ERROR', err, {});
+      activeUploadXhrRef.current = null;
+      logPopupError('CLOUDINARY_UPLOAD_ERROR', err, {});
       setUploadStateMachine('UPLOAD_FAILED');
-      const code = err?.code || 'storage/unknown';
       const msg = err?.message || String(err);
-      setUploadErrorCode(code);
-      const details = mapFirebaseStorageError(code, msg);
+      setUploadErrorCode('cloudinary/upload-failed');
+      const details = mapCloudinaryError(msg);
       setUploadError(details.explanation);
       setUploadErrorDetails(details);
       // NEVER FALL BACK TO OLD IMAGE: hasPendingNewImage remains true, pendingPopupImageUrl remains null.
@@ -662,14 +582,15 @@ export default function AdminPanel() {
     // Transition to VALIDATING
     setUploadStateMachine('VALIDATING');
 
-    // 1. Validate file type
-    if (!file.type.startsWith('image/')) {
+    // 1. Validate file type (JPG/JPEG/PNG/WebP)
+    const validTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/jpg'];
+    if (!file.type.startsWith('image/') && !validTypes.includes(file.type.toLowerCase())) {
       setUploadStateMachine('UPLOAD_FAILED');
-      setUploadErrorCode('storage/invalid-argument');
+      setUploadErrorCode('cloudinary/invalid-format');
       const details = {
         title: 'Invalid File Format',
-        explanation: 'The selected file is not an image. Please select a valid image format (JPG, PNG, WebP).',
-        action: 'Select a valid image file.'
+        explanation: 'The selected file is not an allowed image format. Please select a valid JPG, JPEG, PNG, or WebP image.',
+        action: 'Select a valid JPG, PNG, or WebP image file.'
       };
       setUploadError(details.explanation);
       setUploadErrorDetails(details);
@@ -679,7 +600,7 @@ export default function AdminPanel() {
     // 2. Validate file size (max 15MB)
     if (file.size > 15 * 1024 * 1024) {
       setUploadStateMachine('UPLOAD_FAILED');
-      setUploadErrorCode('storage/quota-exceeded');
+      setUploadErrorCode('cloudinary/file-too-large');
       const details = {
         title: 'File Too Large',
         explanation: 'The selected image is larger than 15MB. Please choose an image under 15MB.',
@@ -698,7 +619,7 @@ export default function AdminPanel() {
     setPreviewObjectUrl(objectUrl);
     setSelectedFile(file);
 
-    // 4. Initiate upload
+    // 4. Initiate upload directly to Cloudinary
     startUploadFlow(file);
     if (e.target) e.target.value = '';
   };
@@ -720,15 +641,23 @@ export default function AdminPanel() {
         setUploadStateMachine('ERROR');
         setPopupSaveFeedback({
           type: 'error',
-          message: '❌ A new image was selected, but its Firebase Storage upload has not completed. Cannot save until upload finishes. Fallback to previous image is strictly prohibited.'
+          message: '❌ A new image was selected, but Cloudinary upload has not completed. Cannot save until upload finishes.'
         });
         return;
       }
-      if (freshUploadedUrl === savedPopupImageUrl || freshUploadedUrl.includes('images.unsplash.com')) {
+      if (freshUploadedUrl === savedPopupImageUrl) {
         setUploadStateMachine('ERROR');
         setPopupSaveFeedback({
           type: 'error',
-          message: '❌ Cannot save: A new file was selected, but the upload returned the old saved image URL. A fresh download URL is required.'
+          message: '❌ Cannot save: A new file was selected, but the image URL matches the previous saved image. A fresh Cloudinary URL is required.'
+        });
+        return;
+      }
+      if (freshUploadedUrl.includes('images.unsplash.com')) {
+        setUploadStateMachine('ERROR');
+        setPopupSaveFeedback({
+          type: 'error',
+          message: '❌ Cannot save: Fallback to Unsplash URL is strictly forbidden when a new file was selected.'
         });
         return;
       }
@@ -738,7 +667,7 @@ export default function AdminPanel() {
     let finalImageUrl = '';
     if (isNewFileFlow) {
       finalImageUrl = (targetImageUrlOverride || pendingPopupImageUrl)!;
-    } else if (directImageUrlInput.trim() && directImageUrlInput.trim() !== savedPopupImageUrl) {
+    } else if (directImageUrlInput.trim()) {
       finalImageUrl = directImageUrlInput.trim();
     } else {
       finalImageUrl = savedPopupImageUrl;
@@ -847,7 +776,7 @@ export default function AdminPanel() {
       if (serverImageUrl !== finalImageUrl) {
         setUrlMatch('NO');
         setUploadStateMachine('ERROR');
-        throw new Error(`Firestore verification failed: saved image URL does not match uploaded image URL. (Server: "${serverImageUrl}", Expected: "${finalImageUrl}")`);
+        throw new Error(`Firestore verification failed: stored image URL ("${serverImageUrl}") does not match the new Cloudinary URL ("${finalImageUrl}").`);
       }
 
       setUrlMatch('YES');
@@ -875,7 +804,7 @@ export default function AdminPanel() {
 
       setPopupSaveFeedback({
         type: 'success',
-        message: 'SUCCESS — NEW IMAGE SAVED AND VERIFIED! Global Popup configuration successfully verified by server.'
+        message: '✓ SUCCESS: Cloudinary image URL verified from Firestore server! Global Popup is live.'
       });
       setTimeout(() => setPopupSaveFeedback(null), 8000);
     } catch (saveErr: any) {
@@ -1683,9 +1612,9 @@ export default function AdminPanel() {
                     {uploadStateMachine === 'NO_NEW_FILE' && 'Idle (No new file)'}
                     {uploadStateMachine === 'FILE_SELECTED' && 'File selected'}
                     {uploadStateMachine === 'VALIDATING' && 'Validating image...'}
-                    {uploadStateMachine === 'UPLOADING' && `Uploading to Firebase Storage (${uploadProgress}%)`}
+                    {uploadStateMachine === 'UPLOADING' && `Uploading to Cloudinary (${uploadProgress}%)`}
                     {uploadStateMachine === 'UPLOAD_SUCCESS' && 'Upload complete ✓'}
-                    {uploadStateMachine === 'READY_TO_SAVE' && 'New image uploaded ✓ Ready to save'}
+                    {uploadStateMachine === 'READY_TO_SAVE' && 'New image uploaded to Cloudinary ✓ Ready to save'}
                     {uploadStateMachine === 'SAVING' && 'Saving to Firestore...'}
                     {uploadStateMachine === 'VERIFYING' && 'Verifying with server...'}
                     {uploadStateMachine === 'SUCCESS' && 'Verified by server ✓'}
@@ -1703,9 +1632,9 @@ export default function AdminPanel() {
                       />
                     </div>
                     <div className="flex justify-between text-[11px] text-neutral-400 font-mono">
-                      <span>Uploading to Firebase Storage</span>
+                      <span>Uploading to Cloudinary</span>
                       <span>
-                        {uploadProgress}% • {(bytesTransferred / (1024 * 1024)).toFixed(2)} MB / {(totalBytes / (1024 * 1024)).toFixed(2)} MB
+                        {uploadProgress}% • {(bytesTransferred / 1024).toFixed(1)} KB / {(totalBytes / 1024).toFixed(1)} KB
                       </span>
                     </div>
                   </div>
@@ -1714,7 +1643,7 @@ export default function AdminPanel() {
                 {(uploadStateMachine === 'READY_TO_SAVE' || uploadStateMachine === 'UPLOAD_SUCCESS') && (
                   <div className="text-xs text-green-400 flex items-center gap-2 bg-green-500/10 border border-green-500/20 rounded-lg p-3">
                     <CheckCircle2 size={16} className="shrink-0" />
-                    <span>Upload complete ✓ Ready to save. Click <strong>Save Popup Config</strong> below to publish to the site.</span>
+                    <span>Cloudinary upload complete ✓ Ready to save. Click <strong>Save Popup Config</strong> below to publish to the site.</span>
                   </div>
                 )}
 
@@ -1724,15 +1653,15 @@ export default function AdminPanel() {
                       <XCircle size={18} className="text-red-400 shrink-0 mt-0.5" />
                       <div className="space-y-2 flex-1">
                         <div className="font-bold text-sm text-red-400">
-                          Firebase Storage Upload Failed
+                          {uploadErrorDetails?.title || 'Cloudinary Upload Failed'}
                         </div>
                         {uploadErrorCode && (
                           <div className="bg-black/40 px-2.5 py-1.5 rounded-lg border border-red-500/20 font-mono text-[11px] text-red-300">
-                            <strong className="text-red-400">Error Code:</strong> {uploadErrorCode}
+                            <strong className="text-red-400">Status:</strong> {uploadErrorCode}
                           </div>
                         )}
                         <div className="bg-black/40 px-2.5 py-1.5 rounded-lg border border-red-500/20 font-mono text-[11px] text-red-200">
-                          <strong className="text-red-400">Error Message:</strong> {uploadError || 'Storage request failed.'}
+                          <strong className="text-red-400">Error Message:</strong> {uploadError || 'Upload request failed.'}
                         </div>
                         {uploadErrorDetails && (
                           <div className="space-y-1 text-[11px] text-red-300/90 leading-relaxed border-t border-red-500/15 pt-2">
@@ -1782,26 +1711,20 @@ export default function AdminPanel() {
                 {/* Section 18: Diagnostics and Technical Information */}
                 <div className="pt-3 border-t border-white/10 space-y-2">
                   <div className="text-xs font-bold text-neutral-300 uppercase tracking-wider flex items-center justify-between">
-                    <span>Pipeline Diagnostics</span>
-                    <span className="font-mono text-[10px] text-neutral-500">laxmi-artworks.firebasestorage.app</span>
+                    <span>Popup Diagnostics</span>
+                    <span className="font-mono text-[10px] text-amber-400">Cloudinary Pipeline</span>
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] font-mono">
                     <div className="bg-black/60 p-2.5 rounded-lg border border-white/5 truncate">
-                      <span className="text-neutral-500 block text-[10px] uppercase font-sans font-semibold">CURRENT SAVED IMAGE:</span>
-                      <span className="text-neutral-300" title={savedPopupImageUrl || 'None'}>
-                        {savedPopupImageUrl ? (savedPopupImageUrl.startsWith('data:') ? 'Embedded image data' : savedPopupImageUrl.slice(0, 36) + '...') : '(None)'}
-                      </span>
-                    </div>
-                    <div className="bg-black/60 p-2.5 rounded-lg border border-white/5 truncate">
-                      <span className="text-neutral-500 block text-[10px] uppercase font-sans font-semibold">PENDING IMAGE:</span>
-                      <span className={pendingPopupImageUrl ? 'text-green-400 font-bold' : 'text-neutral-400'} title={pendingPopupImageUrl || 'None'}>
-                        {pendingPopupImageUrl ? pendingPopupImageUrl.slice(0, 36) + '...' : '(None)'}
+                      <span className="text-neutral-500 block text-[10px] uppercase font-sans font-semibold">SELECTED FILENAME:</span>
+                      <span className="text-neutral-300" title={selectedFile?.name || '(None)'}>
+                        {selectedFile?.name || '(None selected)'}
                       </span>
                     </div>
                     <div className="bg-black/60 p-2.5 rounded-lg border border-white/5">
-                      <span className="text-neutral-500 block text-[10px] uppercase font-sans font-semibold">NEW FILE SELECTED:</span>
-                      <span className={hasPendingNewImage ? 'text-amber-400 font-bold' : 'text-neutral-400'}>
-                        {hasPendingNewImage ? 'Yes' : 'No'}
+                      <span className="text-neutral-500 block text-[10px] uppercase font-sans font-semibold">FILE SIZE:</span>
+                      <span className="text-neutral-300">
+                        {selectedFile ? `${(selectedFile.size / 1024).toFixed(1)} KB` : '(N/A)'}
                       </span>
                     </div>
                     <div className="bg-black/60 p-2.5 rounded-lg border border-white/5">
@@ -1813,38 +1736,36 @@ export default function AdminPanel() {
                         uploadStateMachine === 'SAVING' || uploadStateMachine === 'VERIFYING' ? 'text-cyan-400' :
                         uploadStateMachine === 'SUCCESS' ? 'text-emerald-400' : 'text-neutral-400'
                       }`}>
-                        {uploadStateMachine}
-                      </span>
-                    </div>
-                    <div className="bg-black/60 p-2.5 rounded-lg border border-white/5">
-                      <span className="text-neutral-500 block text-[10px] uppercase font-sans font-semibold">UPLOAD PROGRESS:</span>
-                      <span className="text-neutral-300">{uploadProgress}%</span>
-                    </div>
-                    <div className="bg-black/60 p-2.5 rounded-lg border border-white/5">
-                      <span className="text-neutral-500 block text-[10px] uppercase font-sans font-semibold">STORAGE PLAN:</span>
-                      <span className="text-neutral-300 font-mono">
-                        {uploadErrorCode === 'storage/bucket-not-found' ? 'Blaze Required (Bucket Missing)' : 'Standard'}
+                        {uploadStateMachine === 'UPLOADING' ? `UPLOADING (${uploadProgress}%)` : uploadStateMachine}
                       </span>
                     </div>
                     <div className="bg-black/60 p-2.5 rounded-lg border border-white/5 truncate">
-                      <span className="text-neutral-500 block text-[10px] uppercase font-sans font-semibold">FINAL SAVE URL:</span>
-                      <span className="text-neutral-300" title={finalSaveUrl || 'Not yet saved'}>
-                        {finalSaveUrl ? (finalSaveUrl.startsWith('data:') ? 'Embedded image data' : finalSaveUrl.slice(0, 36) + '...') : '(Not yet saved)'}
+                      <span className="text-neutral-500 block text-[10px] uppercase font-sans font-semibold">CLOUDINARY URL AFTER UPLOAD:</span>
+                      <span className={pendingPopupImageUrl ? 'text-green-400 font-bold' : 'text-neutral-400'} title={pendingPopupImageUrl || 'None'}>
+                        {pendingPopupImageUrl ? pendingPopupImageUrl : '(Not uploaded yet)'}
                       </span>
                     </div>
+                    <div className="bg-black/60 p-2.5 rounded-lg border border-white/5">
+                      <span className="text-neutral-500 block text-[10px] uppercase font-sans font-semibold">FIRESTORE DOCUMENT PATH:</span>
+                      <span className="text-neutral-300 font-mono">settings/popup</span>
+                    </div>
+                    <div className="bg-black/60 p-2.5 rounded-lg border border-white/5">
+                      <span className="text-neutral-500 block text-[10px] uppercase font-sans font-semibold">FIRESTORE IMAGE FIELD:</span>
+                      <span className="text-neutral-300 font-mono">imageUrl (popupImage)</span>
+                    </div>
                     <div className="bg-black/60 p-2.5 rounded-lg border border-white/5 truncate">
-                      <span className="text-neutral-500 block text-[10px] uppercase font-sans font-semibold">FIRESTORE SERVER URL:</span>
+                      <span className="text-neutral-500 block text-[10px] uppercase font-sans font-semibold">SERVER-READ IMAGE URL:</span>
                       <span className="text-neutral-300" title={firestoreServerUrl || 'Not yet verified'}>
-                        {firestoreServerUrl ? (firestoreServerUrl.startsWith('data:') ? 'Embedded image data' : firestoreServerUrl.slice(0, 36) + '...') : '(Not yet verified)'}
+                        {firestoreServerUrl ? firestoreServerUrl : '(Not yet verified)'}
                       </span>
                     </div>
-                    <div className="bg-black/60 p-2.5 rounded-lg border border-white/5 sm:col-span-2 flex items-center justify-between">
-                      <span className="text-neutral-500 text-[10px] uppercase font-sans font-semibold">URL MATCH:</span>
+                    <div className="bg-black/60 p-2.5 rounded-lg border border-white/5 flex items-center justify-between">
+                      <span className="text-neutral-500 text-[10px] uppercase font-sans font-semibold">VERIFICATION RESULT:</span>
                       <span className={`font-bold text-xs ${
                         urlMatch === 'YES' ? 'text-green-400' :
                         urlMatch === 'NO' ? 'text-red-400' : 'text-neutral-400'
                       }`}>
-                        {urlMatch}
+                        {urlMatch === 'YES' ? 'VERIFIED MATCH ✓' : urlMatch === 'NO' ? 'MISMATCH ✕' : urlMatch}
                       </span>
                     </div>
                   </div>
