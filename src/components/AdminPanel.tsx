@@ -112,10 +112,10 @@ export default function AdminPanel() {
   const [localSiteConfig, setLocalSiteConfig] = useState<SiteConfig>(defaultSiteConfig);
 
   // Strict Popup Manager State Machine Types & Variables
-  // NO_NEW_FILE -> FILE_SELECTED -> VALIDATING -> UPLOADING -> UPLOAD_SUCCESS -> READY_TO_SAVE -> SAVING -> VERIFYING -> SUCCESS
+  // NOT_STARTED -> FILE_SELECTED -> VALIDATING -> UPLOADING -> UPLOAD_SUCCESS -> READY_TO_SAVE -> SAVING -> VERIFYING -> SUCCESS
   // On error: UPLOAD_FAILED -> ERROR
   type PopupUploadState = 
-    | 'NO_NEW_FILE' 
+    | 'NOT_STARTED' 
     | 'FILE_SELECTED' 
     | 'VALIDATING' 
     | 'UPLOADING' 
@@ -129,12 +129,13 @@ export default function AdminPanel() {
 
   const [savedPopupImageUrl, setSavedPopupImageUrl] = useState<string>('');
   const [pendingPopupImageUrl, setPendingPopupImageUrl] = useState<string | null>(null);
+  const [cloudinarySecureUrl, setCloudinarySecureUrl] = useState<string | null>(null);
   const [hasPendingNewImage, setHasPendingNewImage] = useState<boolean>(false);
   const [directImageUrlInput, setDirectImageUrlInput] = useState<string>('');
   const [previewObjectUrl, setPreviewObjectUrl] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   
-  const [uploadStateMachine, setUploadStateMachine] = useState<PopupUploadState>('NO_NEW_FILE');
+  const [uploadStateMachine, setUploadStateMachine] = useState<PopupUploadState>('NOT_STARTED');
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [bytesTransferred, setBytesTransferred] = useState<number>(0);
   const [totalBytes, setTotalBytes] = useState<number>(0);
@@ -499,6 +500,12 @@ export default function AdminPanel() {
   };
 
   const startUploadFlow = async (file: File) => {
+    if (!file || !(file instanceof File)) {
+      setUploadStateMachine('ERROR');
+      setUploadError('No valid file object provided.');
+      return;
+    }
+
     if (activeUploadXhrRef.current) {
       try { activeUploadXhrRef.current.abort(); } catch (_) {}
       activeUploadXhrRef.current = null;
@@ -512,6 +519,9 @@ export default function AdminPanel() {
     setUploadErrorCode(null);
     setUploadErrorDetails(null);
     setPopupSaveFeedback(null);
+    setCloudinarySecureUrl(null);
+    setPendingPopupImageUrl(null);
+    setUrlMatch('N/A');
 
     logPopupStage('CLOUDINARY_UPLOAD_STARTED', {
       fileName: file.name,
@@ -535,7 +545,13 @@ export default function AdminPanel() {
       });
 
       activeUploadXhrRef.current = null;
+
+      if (!result.secure_url || (!result.secure_url.includes('cloudinary.com') && !result.secure_url.includes('res.cloudinary.com'))) {
+        throw new Error('Cloudinary response did not return a valid Cloudinary secure_url');
+      }
+
       setUploadProgress(100);
+      setCloudinarySecureUrl(result.secure_url);
       setPendingPopupImageUrl(result.secure_url);
       setUploadStateMachine('READY_TO_SAVE');
 
@@ -553,7 +569,8 @@ export default function AdminPanel() {
       const details = mapCloudinaryError(msg);
       setUploadError(details.explanation);
       setUploadErrorDetails(details);
-      // NEVER FALL BACK TO OLD IMAGE: hasPendingNewImage remains true, pendingPopupImageUrl remains null.
+      setCloudinarySecureUrl(null);
+      setPendingPopupImageUrl(null);
     }
   };
 
@@ -563,7 +580,9 @@ export default function AdminPanel() {
 
     // Transition to FILE_SELECTED
     setUploadStateMachine('FILE_SELECTED');
+    setSelectedFile(file);
     setHasPendingNewImage(true);
+    setCloudinarySecureUrl(null);
     setPendingPopupImageUrl(null);
     setFinalSaveUrl(null);
     setFirestoreServerUrl(null);
@@ -617,7 +636,6 @@ export default function AdminPanel() {
     }
     const objectUrl = URL.createObjectURL(file);
     setPreviewObjectUrl(objectUrl);
-    setSelectedFile(file);
 
     // 4. Initiate upload directly to Cloudinary
     startUploadFlow(file);
@@ -626,78 +644,72 @@ export default function AdminPanel() {
 
   const getActiveDisplayImageUrl = () => {
     if (hasPendingNewImage) {
-      return pendingPopupImageUrl || previewObjectUrl || null;
+      return cloudinarySecureUrl || pendingPopupImageUrl || previewObjectUrl || null;
     }
     return directImageUrlInput.trim() || savedPopupImageUrl || null;
   };
 
-  const executeSavePopup = async (targetImageUrlOverride?: string) => {
-    const isNewFileFlow = Boolean(hasPendingNewImage || selectedFile);
+  const executeSavePopup = async () => {
+    // 1. Strict Requirement 1 & 4:
+    // Upload Status must NEVER become SUCCESS unless:
+    // - a real File object was selected,
+    // - the file was actually sent to Cloudinary,
+    // - Cloudinary returned a successful response,
+    // - the response contains a non-empty secure_url,
+    // - the returned secure_url is a Cloudinary URL.
+    // If no file is selected:
+    // - Upload Status must be NOT STARTED / ERROR, never SUCCESS.
+    // - Do not save anything to Firestore.
+    // - Do not verify the old URL as a successful upload.
 
-    // 1. Strict guard: If a new file was selected, it MUST have a fresh uploaded URL before saving can proceed
-    if (isNewFileFlow) {
-      const freshUploadedUrl = targetImageUrlOverride || pendingPopupImageUrl;
-      if (!freshUploadedUrl) {
-        setUploadStateMachine('ERROR');
-        setPopupSaveFeedback({
-          type: 'error',
-          message: '❌ A new image was selected, but Cloudinary upload has not completed. Cannot save until upload finishes.'
-        });
-        return;
-      }
-      if (freshUploadedUrl === savedPopupImageUrl) {
-        setUploadStateMachine('ERROR');
-        setPopupSaveFeedback({
-          type: 'error',
-          message: '❌ Cannot save: A new file was selected, but the image URL matches the previous saved image. A fresh Cloudinary URL is required.'
-        });
-        return;
-      }
-      if (freshUploadedUrl.includes('images.unsplash.com')) {
-        setUploadStateMachine('ERROR');
-        setPopupSaveFeedback({
-          type: 'error',
-          message: '❌ Cannot save: Fallback to Unsplash URL is strictly forbidden when a new file was selected.'
-        });
-        return;
-      }
-    }
-
-    // Determine finalImageUrl with strict priority — NEVER fall back to old Unsplash URL when a new file was selected
-    let finalImageUrl = '';
-    if (isNewFileFlow) {
-      finalImageUrl = (targetImageUrlOverride || pendingPopupImageUrl)!;
-    } else if (directImageUrlInput.trim()) {
-      finalImageUrl = directImageUrlInput.trim();
-    } else {
-      finalImageUrl = savedPopupImageUrl;
-    }
-
-    // Double safeguard: If a new file was selected, finalImageUrl must strictly be the new uploaded image
-    if (isNewFileFlow && (!finalImageUrl || finalImageUrl === savedPopupImageUrl || finalImageUrl.includes('images.unsplash.com'))) {
+    if (!selectedFile || !(selectedFile instanceof File)) {
       setUploadStateMachine('ERROR');
+      setUrlMatch('N/A');
       setPopupSaveFeedback({
         type: 'error',
-        message: '❌ Data flow error: A new file was selected, but finalImageUrl fell back to the previous saved URL. Save aborted.'
+        message: '❌ Cannot save: No image file selected. Please select an image file to upload to Cloudinary before saving.'
       });
       return;
     }
 
-    // 2. Validate popup enabled without image
-    if (popupEnabled && !finalImageUrl) {
+    const newlyReturnedCloudinarySecureUrl = cloudinarySecureUrl || pendingPopupImageUrl;
+
+    if (!newlyReturnedCloudinarySecureUrl || (!newlyReturnedCloudinarySecureUrl.includes('cloudinary.com') && !newlyReturnedCloudinarySecureUrl.includes('res.cloudinary.com'))) {
       setUploadStateMachine('ERROR');
+      setUrlMatch('N/A');
       setPopupSaveFeedback({
         type: 'error',
-        message: '❌ Please upload an image or provide an Image URL before enabling the popup.'
+        message: '❌ Cannot save: Cloudinary upload has not completed or did not return a valid Cloudinary secure URL.'
       });
       return;
     }
 
-    // Section 11: Log POPUP_SAVE_INPUT
+    if (newlyReturnedCloudinarySecureUrl === savedPopupImageUrl) {
+      setUploadStateMachine('ERROR');
+      setUrlMatch('N/A');
+      setPopupSaveFeedback({
+        type: 'error',
+        message: '❌ Cannot save: The image URL matches the previous saved image. A new Cloudinary upload is required.'
+      });
+      return;
+    }
+
+    if (newlyReturnedCloudinarySecureUrl.includes('images.unsplash.com')) {
+      setUploadStateMachine('ERROR');
+      setUrlMatch('N/A');
+      setPopupSaveFeedback({
+        type: 'error',
+        message: '❌ Cannot save: Fallback to Unsplash URL is strictly forbidden.'
+      });
+      return;
+    }
+
+    const finalImageUrl = newlyReturnedCloudinarySecureUrl;
+
     console.log('[POPUP_SAVE_INPUT]', {
-      hasPendingNewImage,
-      pendingPopupImageUrl: targetImageUrlOverride || pendingPopupImageUrl,
-      savedPopupImageUrl,
+      selectedFileName: selectedFile.name,
+      fileSize: selectedFile.size,
+      newlyReturnedCloudinarySecureUrl,
       finalImageUrl
     });
 
@@ -711,7 +723,8 @@ export default function AdminPanel() {
     logPopupStage('POPUP_SAVE_STARTED', {
       enabled: popupEnabled,
       frequency: popupFrequency,
-      finalImageUrl
+      finalImageUrl,
+      newlyReturnedCloudinarySecureUrl
     });
 
     const now = Date.now();
@@ -720,7 +733,7 @@ export default function AdminPanel() {
       frequency: popupFrequency || 'session',
       imageUrl: finalImageUrl,
       popupImage: finalImageUrl,
-      directImageUrl: hasPendingNewImage ? '' : (directImageUrlInput.trim() || finalImageUrl),
+      directImageUrl: finalImageUrl,
       updatedAt: now,
       updatedBy: auth.currentUser?.email || user?.email || 'admin'
     };
@@ -755,6 +768,8 @@ export default function AdminPanel() {
       }
 
       // Section 13: FIRESTORE SERVER READ-BACK VERIFICATION
+      // Requirement 6: Must compare newlyReturnedCloudinarySecureUrl VS server-read settings/popup.imageUrl
+      // It must NOT compare the Firestore URL against itself or against previous saved URL!
       setUploadStateMachine('VERIFYING');
       logPopupStage('POPUP_SERVER_READBACK_STARTED', { doc: 'settings/popup' });
 
@@ -769,46 +784,39 @@ export default function AdminPanel() {
 
       console.log('[POPUP_SERVER_READBACK_VERIFY]', {
         serverImageUrl,
-        finalImageUrl,
-        match: serverImageUrl === finalImageUrl
+        newlyReturnedCloudinarySecureUrl,
+        match: serverImageUrl === newlyReturnedCloudinarySecureUrl
       });
 
-      if (serverImageUrl !== finalImageUrl) {
+      if (!serverImageUrl || serverImageUrl !== newlyReturnedCloudinarySecureUrl) {
         setUrlMatch('NO');
         setUploadStateMachine('ERROR');
-        throw new Error(`Firestore verification failed: stored image URL ("${serverImageUrl}") does not match the new Cloudinary URL ("${finalImageUrl}").`);
+        throw new Error(`Firestore verification failed: stored image URL ("${serverImageUrl}") does not match the newly returned Cloudinary URL ("${newlyReturnedCloudinarySecureUrl}").`);
       }
 
+      // ONLY HERE DOES UPLOAD STATUS BECOME SUCCESS
       setUrlMatch('YES');
       setUploadStateMachine('SUCCESS');
-      const wasNewFile = isNewFileFlow;
-      setSavedPopupImageUrl(finalImageUrl);
+      setSavedPopupImageUrl(newlyReturnedCloudinarySecureUrl);
+      setDirectImageUrlInput(newlyReturnedCloudinarySecureUrl);
       setHasPendingNewImage(false);
-      setPendingPopupImageUrl(null);
-      if (wasNewFile) {
-        setDirectImageUrlInput(finalImageUrl);
-      }
-      if (previewObjectUrl) {
-        try { URL.revokeObjectURL(previewObjectUrl); } catch (_) {}
-        setPreviewObjectUrl(null);
-      }
-      setSelectedFile(null);
 
       setLocalSiteConfig(prev => ({
         ...prev,
         popupEnabled: popupPayload.enabled,
         popupFrequency: popupPayload.frequency,
-        popupImage: finalImageUrl,
-        imageUrl: finalImageUrl
+        popupImage: newlyReturnedCloudinarySecureUrl,
+        imageUrl: newlyReturnedCloudinarySecureUrl
       }));
 
       setPopupSaveFeedback({
         type: 'success',
-        message: '✓ SUCCESS: Cloudinary image URL verified from Firestore server! Global Popup is live.'
+        message: `✓ SUCCESS: Cloudinary image URL verified from Firestore server! Stored URL: ${newlyReturnedCloudinarySecureUrl}`
       });
       setTimeout(() => setPopupSaveFeedback(null), 8000);
     } catch (saveErr: any) {
       logPopupError('POPUP_SAVE_ERROR', saveErr, { finalImageUrl });
+      setUrlMatch('NO');
       setUploadStateMachine('ERROR');
       setPopupSaveFeedback({
         type: 'error',
@@ -1502,14 +1510,17 @@ export default function AdminPanel() {
                                 try { URL.revokeObjectURL(previewObjectUrl); } catch (_) {}
                               }
                               setPreviewObjectUrl(null);
+                              setCloudinarySecureUrl(null);
                               setPendingPopupImageUrl(null);
                               setHasPendingNewImage(false);
                               setSelectedFile(null);
-                              setUploadStateMachine('NO_NEW_FILE');
+                              setUploadStateMachine('NOT_STARTED');
                               setUploadProgress(0);
                               setUploadError(null);
                               setUploadErrorCode(null);
                               setUploadErrorDetails(null);
+                              setUrlMatch('N/A');
+                              setFirestoreServerUrl(null);
                             }}
                             className="text-[11px] text-neutral-400 hover:text-white flex items-center gap-1 font-semibold"
                           >
@@ -1524,16 +1535,19 @@ export default function AdminPanel() {
                                 try { URL.revokeObjectURL(previewObjectUrl); } catch (_) {}
                               }
                               setPreviewObjectUrl(null);
+                              setCloudinarySecureUrl(null);
                               setPendingPopupImageUrl(null);
                               setHasPendingNewImage(false);
                               setDirectImageUrlInput('');
                               setSavedPopupImageUrl('');
                               setSelectedFile(null);
-                              setUploadStateMachine('NO_NEW_FILE');
+                              setUploadStateMachine('NOT_STARTED');
                               setUploadProgress(0);
                               setUploadError(null);
                               setUploadErrorCode(null);
                               setUploadErrorDetails(null);
+                              setUrlMatch('N/A');
+                              setFirestoreServerUrl(null);
                               setLocalSiteConfig(prev => ({ ...prev, popupImage: '', imageUrl: '' }));
                             }} 
                             className="text-[11px] text-red-400 hover:text-red-300 flex items-center gap-1 font-semibold"
@@ -1609,17 +1623,17 @@ export default function AdminPanel() {
                     uploadStateMachine === 'SAVING' || uploadStateMachine === 'VERIFYING' ? 'text-cyan-400' :
                     uploadStateMachine === 'SUCCESS' ? 'text-emerald-400' : 'text-neutral-400'
                   }`}>
-                    {uploadStateMachine === 'NO_NEW_FILE' && 'Idle (No new file)'}
-                    {uploadStateMachine === 'FILE_SELECTED' && 'File selected'}
-                    {uploadStateMachine === 'VALIDATING' && 'Validating image...'}
-                    {uploadStateMachine === 'UPLOADING' && `Uploading to Cloudinary (${uploadProgress}%)`}
-                    {uploadStateMachine === 'UPLOAD_SUCCESS' && 'Upload complete ✓'}
-                    {uploadStateMachine === 'READY_TO_SAVE' && 'New image uploaded to Cloudinary ✓ Ready to save'}
-                    {uploadStateMachine === 'SAVING' && 'Saving to Firestore...'}
-                    {uploadStateMachine === 'VERIFYING' && 'Verifying with server...'}
-                    {uploadStateMachine === 'SUCCESS' && 'Verified by server ✓'}
-                    {uploadStateMachine === 'UPLOAD_FAILED' && 'Upload failed ✕'}
-                    {uploadStateMachine === 'ERROR' && 'Save/Verification error ✕'}
+                    {uploadStateMachine === 'NOT_STARTED' && 'NOT STARTED'}
+                    {uploadStateMachine === 'FILE_SELECTED' && 'FILE SELECTED'}
+                    {uploadStateMachine === 'VALIDATING' && 'VALIDATING IMAGE...'}
+                    {uploadStateMachine === 'UPLOADING' && `UPLOADING TO CLOUDINARY (${uploadProgress}%)`}
+                    {uploadStateMachine === 'UPLOAD_SUCCESS' && 'UPLOAD COMPLETE ✓'}
+                    {uploadStateMachine === 'READY_TO_SAVE' && 'UPLOAD COMPLETE ✓ READY TO SAVE'}
+                    {uploadStateMachine === 'SAVING' && 'SAVING TO FIRESTORE...'}
+                    {uploadStateMachine === 'VERIFYING' && 'VERIFYING SERVER READBACK...'}
+                    {uploadStateMachine === 'SUCCESS' && 'SUCCESS ✓'}
+                    {uploadStateMachine === 'UPLOAD_FAILED' && 'UPLOAD FAILED ✕'}
+                    {uploadStateMachine === 'ERROR' && 'ERROR ✕'}
                   </span>
                 </div>
 
@@ -1681,14 +1695,17 @@ export default function AdminPanel() {
                               try { URL.revokeObjectURL(previewObjectUrl); } catch (_) {}
                             }
                             setPreviewObjectUrl(null);
+                            setCloudinarySecureUrl(null);
                             setPendingPopupImageUrl(null);
                             setHasPendingNewImage(false);
                             setSelectedFile(null);
-                            setUploadStateMachine('NO_NEW_FILE');
+                            setUploadStateMachine('NOT_STARTED');
                             setUploadProgress(0);
                             setUploadError(null);
                             setUploadErrorCode(null);
                             setUploadErrorDetails(null);
+                            setUrlMatch('N/A');
+                            setFirestoreServerUrl(null);
                           }}
                           className="px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 rounded-lg text-xs font-semibold transition-colors"
                         >
@@ -1716,56 +1733,56 @@ export default function AdminPanel() {
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] font-mono">
                     <div className="bg-black/60 p-2.5 rounded-lg border border-white/5 truncate">
-                      <span className="text-neutral-500 block text-[10px] uppercase font-sans font-semibold">SELECTED FILENAME:</span>
-                      <span className="text-neutral-300" title={selectedFile?.name || '(None)'}>
-                        {selectedFile?.name || '(None selected)'}
+                      <span className="text-neutral-500 block text-[10px] uppercase font-sans font-semibold">FILE SELECTED:</span>
+                      <span className={selectedFile ? 'text-green-400 font-bold' : 'text-neutral-400'} title={selectedFile?.name || '(None selected)'}>
+                        {selectedFile ? `${selectedFile.name} (${(selectedFile.size / 1024).toFixed(1)} KB)` : '(None selected)'}
                       </span>
                     </div>
                     <div className="bg-black/60 p-2.5 rounded-lg border border-white/5">
-                      <span className="text-neutral-500 block text-[10px] uppercase font-sans font-semibold">FILE SIZE:</span>
-                      <span className="text-neutral-300">
-                        {selectedFile ? `${(selectedFile.size / 1024).toFixed(1)} KB` : '(N/A)'}
-                      </span>
-                    </div>
-                    <div className="bg-black/60 p-2.5 rounded-lg border border-white/5">
-                      <span className="text-neutral-500 block text-[10px] uppercase font-sans font-semibold">UPLOAD STATUS:</span>
+                      <span className="text-neutral-500 block text-[10px] uppercase font-sans font-semibold">CLOUDINARY UPLOAD:</span>
                       <span className={`font-bold ${
                         uploadStateMachine === 'UPLOADING' ? 'text-amber-400' :
-                        uploadStateMachine === 'READY_TO_SAVE' || uploadStateMachine === 'UPLOAD_SUCCESS' ? 'text-green-400' :
-                        uploadStateMachine === 'UPLOAD_FAILED' || uploadStateMachine === 'ERROR' ? 'text-red-400' :
-                        uploadStateMachine === 'SAVING' || uploadStateMachine === 'VERIFYING' ? 'text-cyan-400' :
-                        uploadStateMachine === 'SUCCESS' ? 'text-emerald-400' : 'text-neutral-400'
+                        (cloudinarySecureUrl || pendingPopupImageUrl) ? 'text-green-400' :
+                        uploadStateMachine === 'UPLOAD_FAILED' ? 'text-red-400' : 'text-neutral-400'
                       }`}>
-                        {uploadStateMachine === 'UPLOADING' ? `UPLOADING (${uploadProgress}%)` : uploadStateMachine}
+                        {uploadStateMachine === 'UPLOADING' ? `IN PROGRESS (${uploadProgress}%)` :
+                         (cloudinarySecureUrl || pendingPopupImageUrl) ? 'COMPLETED ✓' :
+                         uploadStateMachine === 'UPLOAD_FAILED' ? 'FAILED ✕' : 'NOT STARTED'}
                       </span>
                     </div>
                     <div className="bg-black/60 p-2.5 rounded-lg border border-white/5 truncate">
-                      <span className="text-neutral-500 block text-[10px] uppercase font-sans font-semibold">CLOUDINARY URL AFTER UPLOAD:</span>
-                      <span className={pendingPopupImageUrl ? 'text-green-400 font-bold' : 'text-neutral-400'} title={pendingPopupImageUrl || 'None'}>
-                        {pendingPopupImageUrl ? pendingPopupImageUrl : '(Not uploaded yet)'}
+                      <span className="text-neutral-500 block text-[10px] uppercase font-sans font-semibold">CLOUDINARY SECURE URL:</span>
+                      <span className={(cloudinarySecureUrl || pendingPopupImageUrl) ? 'text-green-400 font-bold' : 'text-neutral-400'} title={(cloudinarySecureUrl || pendingPopupImageUrl) || '(Not uploaded yet)'}>
+                        {(cloudinarySecureUrl || pendingPopupImageUrl) ? (cloudinarySecureUrl || pendingPopupImageUrl) : '(Not uploaded yet)'}
                       </span>
                     </div>
                     <div className="bg-black/60 p-2.5 rounded-lg border border-white/5">
-                      <span className="text-neutral-500 block text-[10px] uppercase font-sans font-semibold">FIRESTORE DOCUMENT PATH:</span>
-                      <span className="text-neutral-300 font-mono">settings/popup</span>
-                    </div>
-                    <div className="bg-black/60 p-2.5 rounded-lg border border-white/5">
-                      <span className="text-neutral-500 block text-[10px] uppercase font-sans font-semibold">FIRESTORE IMAGE FIELD:</span>
-                      <span className="text-neutral-300 font-mono">imageUrl (popupImage)</span>
+                      <span className="text-neutral-500 block text-[10px] uppercase font-sans font-semibold">FIRESTORE SAVE:</span>
+                      <span className={`font-bold ${
+                        uploadStateMachine === 'SAVING' ? 'text-cyan-400' :
+                        (uploadStateMachine === 'VERIFYING' || uploadStateMachine === 'SUCCESS') ? 'text-green-400' :
+                        (uploadStateMachine === 'ERROR' && savingPopup) ? 'text-red-400' : 'text-neutral-400'
+                      }`}>
+                        {uploadStateMachine === 'SAVING' ? 'SAVING TO settings/popup...' :
+                         (uploadStateMachine === 'VERIFYING' || uploadStateMachine === 'SUCCESS') ? 'SAVED TO settings/popup ✓' :
+                         (uploadStateMachine === 'ERROR' && savingPopup) ? 'SAVE FAILED ✕' : 'PENDING SAVE'}
+                      </span>
                     </div>
                     <div className="bg-black/60 p-2.5 rounded-lg border border-white/5 truncate">
-                      <span className="text-neutral-500 block text-[10px] uppercase font-sans font-semibold">SERVER-READ IMAGE URL:</span>
-                      <span className="text-neutral-300" title={firestoreServerUrl || 'Not yet verified'}>
-                        {firestoreServerUrl ? firestoreServerUrl : '(Not yet verified)'}
+                      <span className="text-neutral-500 block text-[10px] uppercase font-sans font-semibold">SERVER READBACK:</span>
+                      <span className={firestoreServerUrl ? 'text-neutral-200' : 'text-neutral-400'} title={firestoreServerUrl || '(Not yet read from server)'}>
+                        {firestoreServerUrl ? firestoreServerUrl : '(Not yet read from server)'}
                       </span>
                     </div>
                     <div className="bg-black/60 p-2.5 rounded-lg border border-white/5 flex items-center justify-between">
-                      <span className="text-neutral-500 text-[10px] uppercase font-sans font-semibold">VERIFICATION RESULT:</span>
+                      <span className="text-neutral-500 text-[10px] uppercase font-sans font-semibold">FINAL MATCH:</span>
                       <span className={`font-bold text-xs ${
-                        urlMatch === 'YES' ? 'text-green-400' :
-                        urlMatch === 'NO' ? 'text-red-400' : 'text-neutral-400'
+                        (urlMatch === 'YES' && (cloudinarySecureUrl || pendingPopupImageUrl) && firestoreServerUrl === (cloudinarySecureUrl || pendingPopupImageUrl)) ? 'text-green-400' :
+                        (urlMatch === 'NO' || (uploadStateMachine === 'ERROR' && firestoreServerUrl)) ? 'text-red-400' : 'text-neutral-400'
                       }`}>
-                        {urlMatch === 'YES' ? 'VERIFIED MATCH ✓' : urlMatch === 'NO' ? 'MISMATCH ✕' : urlMatch}
+                        {(urlMatch === 'YES' && (cloudinarySecureUrl || pendingPopupImageUrl) && firestoreServerUrl === (cloudinarySecureUrl || pendingPopupImageUrl))
+                          ? 'VERIFIED MATCH ✓'
+                          : urlMatch === 'NO' ? 'MISMATCH ✕' : 'NOT VERIFIED'}
                       </span>
                     </div>
                   </div>

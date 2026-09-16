@@ -22,17 +22,21 @@ export async function uploadToCloudinary(
   file: File,
   options: CloudinaryUploadOptions = {}
 ): Promise<CloudinaryUploadResult> {
-  const cloudName = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME;
-  const uploadPreset = import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET || 'Laxmi_popup';
+  if (!file || !(file instanceof File)) {
+    throw new Error('No valid File object provided for Cloudinary upload.');
+  }
 
-  if (!cloudName || cloudName.trim() === '' || cloudName.includes('<I WILL PROVIDE THIS>')) {
+  const cloudName = (import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || '').trim();
+  const uploadPreset = (import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET || 'Laxmi_popup').trim();
+
+  if (!cloudName || cloudName.includes('<I WILL PROVIDE THIS>')) {
     throw new Error('Cloudinary Cloud Name is not configured. Please set VITE_CLOUDINARY_CLOUD_NAME in your environment settings.');
   }
 
-  const endpoint = `https://api.cloudinary.com/v1_1/${cloudName.trim()}/image/upload`;
+  const endpoint = `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`;
   const formData = new FormData();
   formData.append('file', file);
-  formData.append('upload_preset', uploadPreset.trim());
+  formData.append('upload_preset', uploadPreset);
   formData.append('folder', 'popup');
 
   return new Promise<CloudinaryUploadResult>((resolve, reject) => {
@@ -58,18 +62,26 @@ export async function uploadToCloudinary(
       if (xhr.status >= 200 && xhr.status < 300) {
         try {
           const data = JSON.parse(xhr.responseText);
-          if (data && data.secure_url) {
-            resolve({
-              secure_url: data.secure_url,
-              public_id: data.public_id,
-              format: data.format,
-              bytes: data.bytes,
-              width: data.width,
-              height: data.height
-            });
-          } else {
+          const secureUrl = data && typeof data.secure_url === 'string' ? data.secure_url.trim() : '';
+          
+          if (!secureUrl) {
             reject(new Error('Cloudinary response did not contain secure_url'));
+            return;
           }
+
+          if (!secureUrl.includes('cloudinary.com') && !secureUrl.includes('res.cloudinary.com')) {
+            reject(new Error(`Returned secure_url is not a valid Cloudinary URL: ${secureUrl}`));
+            return;
+          }
+
+          resolve({
+            secure_url: secureUrl,
+            public_id: data.public_id,
+            format: data.format,
+            bytes: data.bytes,
+            width: data.width,
+            height: data.height
+          });
         } catch (e: any) {
           reject(new Error(`Failed to parse Cloudinary response: ${e?.message || 'Unknown error'}`));
         }
