@@ -644,11 +644,15 @@ async function startServer() {
 
   // Save Popup Configuration (Canonical Firestore document settings/popup ONLY)
   app.post("/api/admin/save-popup-config", async (req, res) => {
-    const { enabled, imageUrl } = req.body;
+    const { enabled, imageUrl, startAt, endAt, maxShows, frequency } = req.body;
     try {
       const popupPayload = {
         enabled: Boolean(enabled),
-        imageUrl: String(imageUrl || '').trim()
+        imageUrl: String(imageUrl || '').trim(),
+        startAt: startAt || null,
+        endAt: endAt || null,
+        maxShows: maxShows !== undefined && maxShows !== null && maxShows !== '' ? Number(maxShows) : 0,
+        frequency: frequency || 'every_visit'
       };
 
       await setDoc(doc(db, 'settings', 'popup'), popupPayload);

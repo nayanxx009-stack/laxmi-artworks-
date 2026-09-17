@@ -8,7 +8,7 @@ import { auth, googleProvider, db } from '../lib/firebase';
 import { collection, getDocs, doc, updateDoc, deleteDoc, query, orderBy, setDoc, getDoc, getDocFromServer, limit, onSnapshot } from 'firebase/firestore';
 import { uploadToCloudinary } from '../lib/cloudinary';
 import jsPDF from 'jspdf';
-import { Shield, Truck, Download, LogOut, CheckCircle2, Clock, XCircle, Trash2, Edit2, Save, X, RefreshCw, Eye, LayoutDashboard, Settings, Users, ArrowRight, Paintbrush, Loader2, Link2, Lock, Plus, Image as ImageIcon, Mail, MessageSquare, IndianRupee, UploadCloud, Bell, AlertCircle } from 'lucide-react';
+import { Shield, Truck, Download, LogOut, CheckCircle2, Clock, Calendar, XCircle, Trash2, Edit2, Save, X, RefreshCw, Eye, LayoutDashboard, Settings, Users, ArrowRight, Paintbrush, Loader2, Link2, Lock, Plus, Image as ImageIcon, Mail, MessageSquare, IndianRupee, UploadCloud, Bell, AlertCircle } from 'lucide-react';
 import AdminAnalytics from './AdminAnalytics';
 import AdminBackup from './AdminBackup';
 import AdminChat from './AdminChat';
@@ -114,6 +114,10 @@ export default function AdminPanel() {
   // Popup Manager State (Clean & direct to canonical settings/popup)
   const [popupEnabled, setPopupEnabled] = useState<boolean>(false);
   const [savedPopupImageUrl, setSavedPopupImageUrl] = useState<string>('');
+  const [popupStartAt, setPopupStartAt] = useState<string>('');
+  const [popupEndAt, setPopupEndAt] = useState<string>('');
+  const [popupMaxShows, setPopupMaxShows] = useState<number>(0);
+  const [popupFrequency, setPopupFrequency] = useState<'every_visit' | 'once_per_session' | 'once_per_day'>('every_visit');
   const [selectedPopupFile, setSelectedPopupFile] = useState<File | null>(null);
   const [popupPreviewUrl, setPopupPreviewUrl] = useState<string | null>(null);
   const [isUploadingPopup, setIsUploadingPopup] = useState<boolean>(false);
@@ -151,6 +155,10 @@ export default function AdminPanel() {
           const activeImg = (typeof pData?.imageUrl === 'string' ? pData.imageUrl.trim() : '') || (typeof pData?.popupImage === 'string' ? pData.popupImage.trim() : '');
           setSavedPopupImageUrl(activeImg);
           setPopupEnabled(Boolean(pData?.enabled));
+          setPopupStartAt(typeof pData?.startAt === 'string' ? pData.startAt : '');
+          setPopupEndAt(typeof pData?.endAt === 'string' ? pData.endAt : '');
+          setPopupMaxShows(pData?.maxShows !== undefined && pData?.maxShows !== null ? Number(pData.maxShows) : 0);
+          setPopupFrequency(pData?.frequency || 'every_visit');
         }
       } catch (err) {
         console.warn('Notice loading canonical settings/popup:', err);
@@ -431,6 +439,49 @@ export default function AdminPanel() {
     return popupPreviewUrl || savedPopupImageUrl || '';
   };
 
+  const getPopupScheduleStatus = () => {
+    if (!popupEnabled) {
+      return {
+        label: 'Disabled',
+        badgeClass: 'bg-neutral-800 text-neutral-400 border-neutral-700',
+        description: 'Popup is turned off globally and will not be displayed to any visitors.'
+      };
+    }
+    if (!savedPopupImageUrl && !selectedPopupFile) {
+      return {
+        label: 'Needs Image',
+        badgeClass: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
+        description: 'Please upload or select an image to enable popup display.'
+      };
+    }
+    const now = Date.now();
+    if (popupStartAt) {
+      const startMs = new Date(popupStartAt).getTime();
+      if (!isNaN(startMs) && now < startMs) {
+        return {
+          label: 'Scheduled for Future',
+          badgeClass: 'bg-blue-500/10 text-blue-400 border-blue-500/30',
+          description: `Scheduled to start displaying on ${new Date(popupStartAt).toLocaleString()}.`
+        };
+      }
+    }
+    if (popupEndAt) {
+      const endMs = new Date(popupEndAt).getTime();
+      if (!isNaN(endMs) && now > endMs) {
+        return {
+          label: 'Expired',
+          badgeClass: 'bg-red-500/10 text-red-400 border-red-500/30',
+          description: `Expired on ${new Date(popupEndAt).toLocaleString()} and will no longer show.`
+        };
+      }
+    }
+    return {
+      label: 'Active & Live',
+      badgeClass: 'bg-green-500/10 text-green-400 border-green-500/30',
+      description: 'Popup is active and currently displaying to eligible visitors according to schedule and frequency rules.'
+    };
+  };
+
   const executeSavePopup = async () => {
     setIsSavingPopup(true);
     setPopupFeedback(null);
@@ -461,7 +512,11 @@ export default function AdminPanel() {
       // Save directly to settings/popup
       const popupPayload = {
         enabled: Boolean(popupEnabled),
-        imageUrl: finalImageUrl
+        imageUrl: finalImageUrl,
+        startAt: popupStartAt ? popupStartAt : null,
+        endAt: popupEndAt ? popupEndAt : null,
+        maxShows: Number(popupMaxShows) || 0,
+        frequency: popupFrequency || 'every_visit'
       };
 
       try {
@@ -1115,6 +1170,151 @@ export default function AdminPanel() {
                   />
                   <div className="w-11 h-6 bg-neutral-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-500"></div>
                 </label>
+              </div>
+
+              {/* Live Status Summary Card */}
+              {(() => {
+                const status = getPopupScheduleStatus();
+                return (
+                  <div className="bg-black/40 border border-white/5 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <span className={`px-3 py-1 rounded-full text-xs font-bold border ${status.badgeClass} flex items-center gap-1.5`}>
+                        <span className="w-2 h-2 rounded-full bg-current animate-pulse"></span>
+                        {status.label}
+                      </span>
+                      <p className="text-xs text-neutral-400">{status.description}</p>
+                    </div>
+                    <div className="text-xs text-neutral-400 flex items-center gap-2 shrink-0">
+                      <span className="bg-white/5 px-2.5 py-1 rounded-lg border border-white/5">
+                        {popupFrequency === 'every_visit' ? 'Every visit' : popupFrequency === 'once_per_session' ? 'Once per session' : 'Once per day'}
+                      </span>
+                      <span className="bg-white/5 px-2.5 py-1 rounded-lg border border-white/5">
+                        {popupMaxShows === 0 ? 'Unlimited shows' : `Max ${popupMaxShows} ${popupMaxShows === 1 ? 'show' : 'shows'}`}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Scheduling Section */}
+              <div className="space-y-4 border-b border-white/5 pb-6">
+                <div>
+                  <h3 className="font-bold text-white text-sm flex items-center gap-2">
+                    <Calendar size={16} className="text-amber-500" /> Display Schedule
+                  </h3>
+                  <p className="text-xs text-neutral-400">Control when the announcement popup is scheduled to run. Both fields are optional.</p>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {/* Start Date & Time */}
+                  <div className="bg-black/50 border border-white/10 rounded-2xl p-4 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-semibold text-neutral-300 flex items-center gap-1.5">
+                        <Clock size={13} className="text-amber-400" /> Start Date & Time
+                      </label>
+                      {popupStartAt && (
+                        <button
+                          type="button"
+                          onClick={() => setPopupStartAt('')}
+                          className="text-[11px] text-amber-400 hover:text-amber-300 font-semibold"
+                        >
+                          Clear (Immediate)
+                        </button>
+                      )}
+                    </div>
+                    <input
+                      type="datetime-local"
+                      value={popupStartAt}
+                      onChange={e => setPopupStartAt(e.target.value)}
+                      className="w-full bg-neutral-900 border border-white/10 rounded-xl px-3.5 py-2.5 text-white text-sm focus:border-amber-500 focus:outline-none [color-scheme:dark]"
+                    />
+                    <p className="text-[11px] text-neutral-500">
+                      {popupStartAt ? `Active from ${new Date(popupStartAt).toLocaleString()}` : 'Optional. Starts immediately if left empty.'}
+                    </p>
+                  </div>
+
+                  {/* End Date & Time */}
+                  <div className="bg-black/50 border border-white/10 rounded-2xl p-4 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-semibold text-neutral-300 flex items-center gap-1.5">
+                        <Clock size={13} className="text-red-400" /> End Date & Time
+                      </label>
+                      {popupEndAt && (
+                        <button
+                          type="button"
+                          onClick={() => setPopupEndAt('')}
+                          className="text-[11px] text-amber-400 hover:text-amber-300 font-semibold"
+                        >
+                          Clear (No Expiry)
+                        </button>
+                      )}
+                    </div>
+                    <input
+                      type="datetime-local"
+                      value={popupEndAt}
+                      onChange={e => setPopupEndAt(e.target.value)}
+                      className="w-full bg-neutral-900 border border-white/10 rounded-xl px-3.5 py-2.5 text-white text-sm focus:border-amber-500 focus:outline-none [color-scheme:dark]"
+                    />
+                    <p className="text-[11px] text-neutral-500">
+                      {popupEndAt ? `Stops showing after ${new Date(popupEndAt).toLocaleString()}` : 'Optional. Runs continuously with no expiration date if left empty.'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Frequency & Display Limits Section */}
+              <div className="space-y-4 border-b border-white/5 pb-6">
+                <div>
+                  <h3 className="font-bold text-white text-sm flex items-center gap-2">
+                    <RefreshCw size={16} className="text-amber-500" /> Display Frequency & Limits
+                  </h3>
+                  <p className="text-xs text-neutral-400">Control how frequently and how many times the popup is shown to each individual visitor.</p>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {/* Frequency Option */}
+                  <div className="bg-black/50 border border-white/10 rounded-2xl p-4 space-y-2">
+                    <label className="text-xs font-semibold text-neutral-300 block">
+                      Display Frequency
+                    </label>
+                    <select
+                      value={popupFrequency}
+                      onChange={e => setPopupFrequency(e.target.value as any)}
+                      className="w-full bg-neutral-900 border border-white/10 rounded-xl px-3.5 py-2.5 text-white text-sm focus:border-amber-500 focus:outline-none"
+                    >
+                      <option value="every_visit">Every visit (Default)</option>
+                      <option value="once_per_session">Once per session</option>
+                      <option value="once_per_day">Once per day</option>
+                    </select>
+                    <p className="text-[11px] text-neutral-500">
+                      {popupFrequency === 'every_visit' && 'Displays on every page load/visit (unless max show count is reached).'}
+                      {popupFrequency === 'once_per_session' && 'Displays only once per browser tab session.'}
+                      {popupFrequency === 'once_per_day' && 'Displays once every 24 hours per visitor browser.'}
+                    </p>
+                  </div>
+
+                  {/* Maximum Show Count */}
+                  <div className="bg-black/50 border border-white/10 rounded-2xl p-4 space-y-2">
+                    <label className="text-xs font-semibold text-neutral-300 block">
+                      Maximum Show Count
+                    </label>
+                    <select
+                      value={popupMaxShows}
+                      onChange={e => setPopupMaxShows(Number(e.target.value))}
+                      className="w-full bg-neutral-900 border border-white/10 rounded-xl px-3.5 py-2.5 text-white text-sm focus:border-amber-500 focus:outline-none"
+                    >
+                      <option value={0}>Unlimited (Default)</option>
+                      <option value={1}>1 time</option>
+                      <option value={2}>2 times</option>
+                      <option value={3}>3 times</option>
+                      <option value={5}>5 times</option>
+                      <option value={10}>10 times</option>
+                    </select>
+                    <p className="text-[11px] text-neutral-500">
+                      {popupMaxShows === 0 ? 'No limit on the total number of times a visitor sees this popup.' : `Stops showing completely after a user has viewed it ${popupMaxShows} ${popupMaxShows === 1 ? 'time' : 'times'}.`}
+                    </p>
+                  </div>
+                </div>
               </div>
 
               {/* Popup Image Section */}

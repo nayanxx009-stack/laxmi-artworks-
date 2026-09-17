@@ -73,3 +73,14 @@ export interface UserNotificationPreferences {
   general: boolean;
   updatedAt?: number;
 }
+
+export type PopupFrequency = 'every_visit' | 'once_per_session' | 'once_per_day';
+
+export interface PopupConfig {
+  enabled: boolean;
+  imageUrl: string;
+  startAt?: string | null;
+  endAt?: string | null;
+  maxShows?: number;
+  frequency?: PopupFrequency;
+}
