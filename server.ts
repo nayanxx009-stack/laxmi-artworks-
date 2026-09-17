@@ -642,31 +642,18 @@ async function startServer() {
     }
   });
 
-  // Save Popup Configuration (Canonical Firestore document settings/popup + settings/site_config)
+  // Save Popup Configuration (Canonical Firestore document settings/popup ONLY)
   app.post("/api/admin/save-popup-config", async (req, res) => {
-    const { enabled, frequency, imageUrl, userEmail } = req.body;
+    const { enabled, imageUrl } = req.body;
     try {
-      const now = Date.now();
       const popupPayload = {
         enabled: Boolean(enabled),
-        frequency: frequency || 'session',
-        imageUrl: String(imageUrl || ''),
-        popupImage: String(imageUrl || ''),
-        updatedAt: now,
-        updatedBy: userEmail || 'admin'
+        imageUrl: String(imageUrl || '').trim()
       };
 
-      await setDoc(doc(db, 'settings', 'popup'), popupPayload, { merge: true });
-      await setDoc(doc(db, 'settings', 'site_config'), {
-        popupEnabled: Boolean(enabled),
-        popupFrequency: frequency || 'session',
-        popupImage: String(imageUrl || ''),
-        imageUrl: String(imageUrl || ''),
-        updatedAt: now
-      }, { merge: true });
-
-      console.log(`[Admin Save Popup API] Popup settings saved successfully by ${userEmail || 'admin'}:`, popupPayload);
-      res.json({ success: true, savedAt: now });
+      await setDoc(doc(db, 'settings', 'popup'), popupPayload);
+      console.log(`[Admin Save Popup API] Popup settings saved successfully:`, popupPayload);
+      res.json({ success: true });
     } catch (err: any) {
       console.error('[Admin Save Popup API] Error saving popup config:', err.message);
       res.status(500).json({ success: false, error: err.message });

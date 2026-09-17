@@ -111,53 +111,19 @@ export default function AdminPanel() {
   const siteConfig = useSiteConfig();
   const [localSiteConfig, setLocalSiteConfig] = useState<SiteConfig>(defaultSiteConfig);
 
-  // Strict Popup Manager State Machine Types & Variables
-  // NOT_STARTED -> FILE_SELECTED -> VALIDATING -> UPLOADING -> UPLOAD_SUCCESS -> READY_TO_SAVE -> SAVING -> VERIFYING -> SUCCESS
-  // On error: UPLOAD_FAILED -> ERROR
-  type PopupUploadState = 
-    | 'NOT_STARTED' 
-    | 'FILE_SELECTED' 
-    | 'VALIDATING' 
-    | 'UPLOADING' 
-    | 'UPLOAD_SUCCESS' 
-    | 'UPLOAD_FAILED' 
-    | 'READY_TO_SAVE' 
-    | 'SAVING' 
-    | 'VERIFYING' 
-    | 'SUCCESS' 
-    | 'ERROR';
-
+  // Popup Manager State (Clean & direct to canonical settings/popup)
+  const [popupEnabled, setPopupEnabled] = useState<boolean>(false);
   const [savedPopupImageUrl, setSavedPopupImageUrl] = useState<string>('');
-  const [pendingPopupImageUrl, setPendingPopupImageUrl] = useState<string | null>(null);
-  const [cloudinarySecureUrl, setCloudinarySecureUrl] = useState<string | null>(null);
-  const [hasPendingNewImage, setHasPendingNewImage] = useState<boolean>(false);
-  const [directImageUrlInput, setDirectImageUrlInput] = useState<string>('');
-  const [previewObjectUrl, setPreviewObjectUrl] = useState<string | null>(null);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  
-  const [uploadStateMachine, setUploadStateMachine] = useState<PopupUploadState>('NOT_STARTED');
-  const [uploadProgress, setUploadProgress] = useState<number>(0);
-  const [bytesTransferred, setBytesTransferred] = useState<number>(0);
-  const [totalBytes, setTotalBytes] = useState<number>(0);
-  const [uploadError, setUploadError] = useState<string | null>(null);
-  const [uploadErrorCode, setUploadErrorCode] = useState<string | null>(null);
-  const [uploadErrorDetails, setUploadErrorDetails] = useState<{ title: string; explanation: string; action: string } | null>(null);
-  const activeUploadXhrRef = useRef<XMLHttpRequest | null>(null);
+  const [selectedPopupFile, setSelectedPopupFile] = useState<File | null>(null);
+  const [popupPreviewUrl, setPopupPreviewUrl] = useState<string | null>(null);
+  const [isUploadingPopup, setIsUploadingPopup] = useState<boolean>(false);
+  const [popupUploadProgress, setPopupUploadProgress] = useState<number>(0);
+  const [isSavingPopup, setIsSavingPopup] = useState<boolean>(false);
+  const [popupFeedback, setPopupFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [showPopupPreview, setShowPopupPreview] = useState(false);
   const popupFileInputRef = useRef<HTMLInputElement>(null);
 
-  // Diagnostics verification tracking
-  const [finalSaveUrl, setFinalSaveUrl] = useState<string | null>(null);
-  const [firestoreServerUrl, setFirestoreServerUrl] = useState<string | null>(null);
-  const [urlMatch, setUrlMatch] = useState<'YES' | 'NO' | 'PENDING' | 'N/A'>('N/A');
-
-  const [popupEnabled, setPopupEnabled] = useState<boolean>(false);
-  const [popupFrequency, setPopupFrequency] = useState<'session' | 'always' | 'daily' | 'once'>('session');
-
-  const [showPopupPreview, setShowPopupPreview] = useState(false);
-  const [showSaveConfirmModal, setShowSaveConfirmModal] = useState(false);
   const [savingSite, setSavingSite] = useState(false);
-  const [savingPopup, setSavingPopup] = useState(false);
-  const [popupSaveFeedback, setPopupSaveFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   const [adminsList, setAdminsList] = useState<{id: string, email: string, role?: string}[]>([]);
   const [newAdminEmail, setNewAdminEmail] = useState("");
@@ -172,9 +138,6 @@ export default function AdminPanel() {
 
   useEffect(() => {
     setLocalSiteConfig(siteConfig);
-    if (siteConfig.popupImage && !savedPopupImageUrl) {
-      setSavedPopupImageUrl(siteConfig.popupImage);
-    }
   }, [siteConfig]);
 
   // Load canonical settings/popup when popup tab is opened
@@ -182,30 +145,15 @@ export default function AdminPanel() {
     if (activeTab !== 'popup') return;
     const fetchCanonicalPopup = async () => {
       try {
-        console.log('[POPUP_SERVER_READBACK_STARTED] Fetching canonical settings/popup');
         const pSnap = await getDoc(doc(db, 'settings', 'popup'));
         if (pSnap.exists()) {
           const pData = pSnap.data();
-          const activeImg = pData.imageUrl || pData.popupImage || '';
+          const activeImg = (typeof pData?.imageUrl === 'string' ? pData.imageUrl.trim() : '') || (typeof pData?.popupImage === 'string' ? pData.popupImage.trim() : '');
           setSavedPopupImageUrl(activeImg);
-          setDirectImageUrlInput(pData.directImageUrl || (activeImg.startsWith('data:') ? '' : activeImg));
-          setPopupEnabled(pData.enabled !== undefined ? Boolean(pData.enabled) : false);
-          setPopupFrequency(pData.frequency || 'session');
-          setLocalSiteConfig(prev => ({
-            ...prev,
-            popupEnabled: pData.enabled !== undefined ? Boolean(pData.enabled) : prev.popupEnabled,
-            popupFrequency: pData.frequency || prev.popupFrequency,
-            popupImage: activeImg,
-            imageUrl: activeImg
-          }));
-          console.log('[POPUP_SERVER_READBACK_SUCCESS] Canonical popup loaded:', {
-            enabled: pData.enabled,
-            frequency: pData.frequency,
-            hasImage: Boolean(activeImg)
-          });
+          setPopupEnabled(Boolean(pData?.enabled));
         }
       } catch (err) {
-        console.warn('[POPUP_SERVER_READBACK_ERROR] Notice loading canonical settings/popup:', err);
+        console.warn('Notice loading canonical settings/popup:', err);
       }
     };
     fetchCanonicalPopup();
@@ -435,406 +383,118 @@ export default function AdminPanel() {
     }
   };
 
-  const logPopupStage = (stage: string, payload?: any) => {
-    console.log(`[${stage}]`, {
-      timestamp: new Date().toISOString(),
-      cloudName: import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || '(Not configured)',
-      uploadPreset: import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET || 'Laxmi_popup',
-      ...payload
-    });
-  };
-
-  const logPopupError = (stage: string, error: any, extra?: any) => {
-    const code = error?.code || error?.status_ || 'unknown';
-    const name = error?.name || 'Error';
-    const message = error?.message || String(error);
-    console.error(`[${stage}]`, {
-      error: {
-        code,
-        name,
-        message,
-        serverResponse: error?.serverResponse,
-      },
-      operation: 'Cloudinary / Firestore Popup',
-      cloudName: import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || '(Not configured)',
-      uploadPreset: import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET || 'Laxmi_popup',
-      ...extra
-    });
-  };
-
-  const mapCloudinaryError = (errorMsg: string): { title: string; explanation: string; action: string } => {
-    const msg = errorMsg || '';
-    if (msg.includes('Cloud Name is not configured') || msg.includes('VITE_CLOUDINARY_CLOUD_NAME')) {
-      return {
-        title: 'Cloudinary Cloud Name Missing',
-        explanation: 'The environment variable VITE_CLOUDINARY_CLOUD_NAME is not set. Cloudinary requires your cloud name to upload images.',
-        action: 'Configure VITE_CLOUDINARY_CLOUD_NAME in your environment settings or .env file.'
-      };
-    }
-    if (msg.includes('Upload preset must be specified') || msg.includes('preset') || msg.includes('whitelist') || msg.includes('Signing Mode')) {
-      return {
-        title: 'Invalid or Missing Upload Preset',
-        explanation: `Cloudinary rejected the unsigned upload preset. Ensure an unsigned upload preset named "${import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET || 'Laxmi_popup'}" exists in your Cloudinary Settings -> Upload presets.`,
-        action: 'In Cloudinary console, go to Settings -> Upload -> Add upload preset, set Signing Mode to "Unsigned", and name it Laxmi_popup.'
-      };
-    }
-    if (msg.includes('File size exceeds') || msg.includes('too large') || msg.includes('larger than')) {
-      return {
-        title: 'File Too Large for Cloudinary',
-        explanation: msg,
-        action: 'Select an image under 15MB or compress it before uploading.'
-      };
-    }
-    if (msg.includes('Network error') || msg.includes('Failed to fetch') || msg.includes('connection')) {
-      return {
-        title: 'Network Connection Error',
-        explanation: 'Could not connect to Cloudinary upload API (api.cloudinary.com).',
-        action: 'Check your internet connection and verify that api.cloudinary.com is reachable.'
-      };
-    }
-    return {
-      title: 'Cloudinary Upload Failed',
-      explanation: msg || 'An error occurred during image upload to Cloudinary.',
-      action: 'Check your Cloudinary cloud name and upload preset settings, then retry.'
-    };
-  };
-
-  const startUploadFlow = async (file: File) => {
-    if (!file || !(file instanceof File)) {
-      setUploadStateMachine('ERROR');
-      setUploadError('No valid file object provided.');
-      return;
-    }
-
-    if (activeUploadXhrRef.current) {
-      try { activeUploadXhrRef.current.abort(); } catch (_) {}
-      activeUploadXhrRef.current = null;
-    }
-
-    setUploadStateMachine('UPLOADING');
-    setUploadProgress(0);
-    setBytesTransferred(0);
-    setTotalBytes(file.size);
-    setUploadError(null);
-    setUploadErrorCode(null);
-    setUploadErrorDetails(null);
-    setPopupSaveFeedback(null);
-    setCloudinarySecureUrl(null);
-    setPendingPopupImageUrl(null);
-    setUrlMatch('N/A');
-
-    logPopupStage('CLOUDINARY_UPLOAD_STARTED', {
-      fileName: file.name,
-      fileSize: file.size,
-      fileType: file.type,
-      cloudName: import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || '(Not configured)',
-      uploadPreset: import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET || 'Laxmi_popup'
-    });
-
-    try {
-      const result = await uploadToCloudinary(file, {
-        onProgress: (info) => {
-          setBytesTransferred(info.loaded);
-          setTotalBytes(info.total);
-          setUploadProgress(info.percent);
-          logPopupStage('CLOUDINARY_UPLOAD_PROGRESS', info);
-        },
-        onXhrCreated: (xhr) => {
-          activeUploadXhrRef.current = xhr;
-        }
-      });
-
-      activeUploadXhrRef.current = null;
-
-      if (!result.secure_url || (!result.secure_url.includes('cloudinary.com') && !result.secure_url.includes('res.cloudinary.com'))) {
-        throw new Error('Cloudinary response did not return a valid Cloudinary secure_url');
-      }
-
-      setUploadProgress(100);
-      setCloudinarySecureUrl(result.secure_url);
-      setPendingPopupImageUrl(result.secure_url);
-      setUploadStateMachine('READY_TO_SAVE');
-
-      logPopupStage('CLOUDINARY_UPLOAD_SUCCESS', {
-        secure_url: result.secure_url,
-        public_id: result.public_id,
-        bytes: result.bytes
-      });
-    } catch (err: any) {
-      activeUploadXhrRef.current = null;
-      logPopupError('CLOUDINARY_UPLOAD_ERROR', err, {});
-      setUploadStateMachine('UPLOAD_FAILED');
-      const msg = err?.message || String(err);
-      setUploadErrorCode('cloudinary/upload-failed');
-      const details = mapCloudinaryError(msg);
-      setUploadError(details.explanation);
-      setUploadErrorDetails(details);
-      setCloudinarySecureUrl(null);
-      setPendingPopupImageUrl(null);
-    }
-  };
-
   const handlePopupImageFileSelection = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || e.target.files.length === 0) return;
     const file = e.target.files[0];
 
-    // Transition to FILE_SELECTED
-    setUploadStateMachine('FILE_SELECTED');
-    setSelectedFile(file);
-    setHasPendingNewImage(true);
-    setCloudinarySecureUrl(null);
-    setPendingPopupImageUrl(null);
-    setFinalSaveUrl(null);
-    setFirestoreServerUrl(null);
-    setUrlMatch('N/A');
-    setUploadError(null);
-    setUploadErrorCode(null);
-    setUploadErrorDetails(null);
-    setPopupSaveFeedback(null);
-
-    logPopupStage('POPUP_FILE_SELECTED', {
-      fileName: file.name,
-      fileSize: file.size,
-      fileType: file.type
-    });
-
-    // Transition to VALIDATING
-    setUploadStateMachine('VALIDATING');
-
-    // 1. Validate file type (JPG/JPEG/PNG/WebP)
     const validTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/jpg'];
     if (!file.type.startsWith('image/') && !validTypes.includes(file.type.toLowerCase())) {
-      setUploadStateMachine('UPLOAD_FAILED');
-      setUploadErrorCode('cloudinary/invalid-format');
-      const details = {
-        title: 'Invalid File Format',
-        explanation: 'The selected file is not an allowed image format. Please select a valid JPG, JPEG, PNG, or WebP image.',
-        action: 'Select a valid JPG, PNG, or WebP image file.'
-      };
-      setUploadError(details.explanation);
-      setUploadErrorDetails(details);
+      setPopupFeedback({
+        type: 'error',
+        message: 'Invalid file format. Please select a JPG, PNG, or WebP image.'
+      });
       return;
     }
 
-    // 2. Validate file size (max 15MB)
     if (file.size > 15 * 1024 * 1024) {
-      setUploadStateMachine('UPLOAD_FAILED');
-      setUploadErrorCode('cloudinary/file-too-large');
-      const details = {
-        title: 'File Too Large',
-        explanation: 'The selected image is larger than 15MB. Please choose an image under 15MB.',
-        action: 'Compress or resize the image before uploading.'
-      };
-      setUploadError(details.explanation);
-      setUploadErrorDetails(details);
+      setPopupFeedback({
+        type: 'error',
+        message: 'The selected image is larger than 15MB. Please choose an image under 15MB.'
+      });
       return;
     }
 
-    // 3. Create local preview URL for instant visual feedback
-    if (previewObjectUrl) {
-      try { URL.revokeObjectURL(previewObjectUrl); } catch (_) {}
+    if (popupPreviewUrl) {
+      try { URL.revokeObjectURL(popupPreviewUrl); } catch (_) {}
     }
-    const objectUrl = URL.createObjectURL(file);
-    setPreviewObjectUrl(objectUrl);
 
-    // 4. Initiate upload directly to Cloudinary
-    startUploadFlow(file);
+    setSelectedPopupFile(file);
+    setPopupPreviewUrl(URL.createObjectURL(file));
+    setPopupFeedback(null);
     if (e.target) e.target.value = '';
   };
 
-  const getActiveDisplayImageUrl = () => {
-    if (hasPendingNewImage) {
-      return cloudinarySecureUrl || pendingPopupImageUrl || previewObjectUrl || null;
+  const cancelSelectedPopupFile = () => {
+    if (popupPreviewUrl) {
+      try { URL.revokeObjectURL(popupPreviewUrl); } catch (_) {}
     }
-    return directImageUrlInput.trim() || savedPopupImageUrl || null;
+    setSelectedPopupFile(null);
+    setPopupPreviewUrl(null);
+  };
+
+  const removePopupImage = () => {
+    cancelSelectedPopupFile();
+    setSavedPopupImageUrl('');
+  };
+
+  const getActivePopupDisplayUrl = () => {
+    return popupPreviewUrl || savedPopupImageUrl || '';
   };
 
   const executeSavePopup = async () => {
-    // 1. Strict Requirement 1 & 4:
-    // Upload Status must NEVER become SUCCESS unless:
-    // - a real File object was selected,
-    // - the file was actually sent to Cloudinary,
-    // - Cloudinary returned a successful response,
-    // - the response contains a non-empty secure_url,
-    // - the returned secure_url is a Cloudinary URL.
-    // If no file is selected:
-    // - Upload Status must be NOT STARTED / ERROR, never SUCCESS.
-    // - Do not save anything to Firestore.
-    // - Do not verify the old URL as a successful upload.
-
-    if (!selectedFile || !(selectedFile instanceof File)) {
-      setUploadStateMachine('ERROR');
-      setUrlMatch('N/A');
-      setPopupSaveFeedback({
-        type: 'error',
-        message: '❌ Cannot save: No image file selected. Please select an image file to upload to Cloudinary before saving.'
-      });
-      return;
-    }
-
-    const newlyReturnedCloudinarySecureUrl = cloudinarySecureUrl || pendingPopupImageUrl;
-
-    if (!newlyReturnedCloudinarySecureUrl || (!newlyReturnedCloudinarySecureUrl.includes('cloudinary.com') && !newlyReturnedCloudinarySecureUrl.includes('res.cloudinary.com'))) {
-      setUploadStateMachine('ERROR');
-      setUrlMatch('N/A');
-      setPopupSaveFeedback({
-        type: 'error',
-        message: '❌ Cannot save: Cloudinary upload has not completed or did not return a valid Cloudinary secure URL.'
-      });
-      return;
-    }
-
-    if (newlyReturnedCloudinarySecureUrl === savedPopupImageUrl) {
-      setUploadStateMachine('ERROR');
-      setUrlMatch('N/A');
-      setPopupSaveFeedback({
-        type: 'error',
-        message: '❌ Cannot save: The image URL matches the previous saved image. A new Cloudinary upload is required.'
-      });
-      return;
-    }
-
-    if (newlyReturnedCloudinarySecureUrl.includes('images.unsplash.com')) {
-      setUploadStateMachine('ERROR');
-      setUrlMatch('N/A');
-      setPopupSaveFeedback({
-        type: 'error',
-        message: '❌ Cannot save: Fallback to Unsplash URL is strictly forbidden.'
-      });
-      return;
-    }
-
-    const finalImageUrl = newlyReturnedCloudinarySecureUrl;
-
-    console.log('[POPUP_SAVE_INPUT]', {
-      selectedFileName: selectedFile.name,
-      fileSize: selectedFile.size,
-      newlyReturnedCloudinarySecureUrl,
-      finalImageUrl
-    });
-
-    setFinalSaveUrl(finalImageUrl);
-    setUrlMatch('PENDING');
-    setUploadStateMachine('SAVING');
-    setSavingPopup(true);
-    setPopupSaveFeedback(null);
-    setShowSaveConfirmModal(false);
-
-    logPopupStage('POPUP_SAVE_STARTED', {
-      enabled: popupEnabled,
-      frequency: popupFrequency,
-      finalImageUrl,
-      newlyReturnedCloudinarySecureUrl
-    });
-
-    const now = Date.now();
-    const popupPayload = {
-      enabled: Boolean(popupEnabled),
-      frequency: popupFrequency || 'session',
-      imageUrl: finalImageUrl,
-      popupImage: finalImageUrl,
-      directImageUrl: finalImageUrl,
-      updatedAt: now,
-      updatedBy: auth.currentUser?.email || user?.email || 'admin'
-    };
+    setIsSavingPopup(true);
+    setPopupFeedback(null);
 
     try {
-      logPopupStage('POPUP_FIRESTORE_WRITE_STARTED', { doc: 'settings/popup', finalImageUrl });
+      let finalImageUrl = savedPopupImageUrl;
+
+      // Operation B: New file selected -> Upload to Cloudinary using unsigned preset
+      if (selectedPopupFile) {
+        setIsUploadingPopup(true);
+        setPopupUploadProgress(0);
+
+        const uploadResult = await uploadToCloudinary(selectedPopupFile, {
+          onProgress: (info) => {
+            setPopupUploadProgress(info.percent);
+          }
+        });
+
+        setIsUploadingPopup(false);
+
+        if (!uploadResult.secure_url || (!uploadResult.secure_url.includes('cloudinary.com') && !uploadResult.secure_url.includes('res.cloudinary.com'))) {
+          throw new Error('Cloudinary response did not return a valid Cloudinary secure URL.');
+        }
+
+        finalImageUrl = uploadResult.secure_url;
+      }
+
+      // Save directly to settings/popup
+      const popupPayload = {
+        enabled: Boolean(popupEnabled),
+        imageUrl: finalImageUrl
+      };
 
       try {
-        await setDoc(doc(db, 'settings', 'popup'), popupPayload, { merge: true });
-        await setDoc(doc(db, 'settings', 'site_config'), {
-          popupEnabled: popupPayload.enabled,
-          popupFrequency: popupPayload.frequency,
-          popupImage: popupPayload.imageUrl,
-          imageUrl: popupPayload.imageUrl,
-          updatedAt: now
-        }, { merge: true });
-        logPopupStage('POPUP_FIRESTORE_WRITE_SUCCESS');
+        await setDoc(doc(db, 'settings', 'popup'), popupPayload);
       } catch (clientWriteErr: any) {
-        logPopupError('POPUP_FIRESTORE_WRITE_ERROR', clientWriteErr, { fallback: 'server-api' });
+        // Fallback to server endpoint
         const res = await fetch('/api/admin/save-popup-config', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ...popupPayload,
-            userEmail: auth.currentUser?.email || user?.email || 'admin'
-          })
+          body: JSON.stringify(popupPayload)
         });
         if (!res.ok) {
           const errData = await res.json().catch(() => ({}));
-          throw new Error(errData.error || clientWriteErr.message || 'Write failed');
+          throw new Error(errData.error || clientWriteErr.message || 'Failed to save popup settings.');
         }
       }
 
-      // Section 13: FIRESTORE SERVER READ-BACK VERIFICATION
-      // Requirement 6: Must compare newlyReturnedCloudinarySecureUrl VS server-read settings/popup.imageUrl
-      // It must NOT compare the Firestore URL against itself or against previous saved URL!
-      setUploadStateMachine('VERIFYING');
-      logPopupStage('POPUP_SERVER_READBACK_STARTED', { doc: 'settings/popup' });
-
-      const serverSnapshot = await getDocFromServer(doc(db, 'settings', 'popup'));
-      if (!serverSnapshot.exists()) {
-        throw new Error("Firestore verification failed: Configuration could not be verified from Firestore server (document not found).");
-      }
-
-      const serverData = serverSnapshot.data();
-      const serverImageUrl = serverData?.imageUrl || serverData?.popupImage || '';
-      setFirestoreServerUrl(serverImageUrl);
-
-      console.log('[POPUP_SERVER_READBACK_VERIFY]', {
-        serverImageUrl,
-        newlyReturnedCloudinarySecureUrl,
-        match: serverImageUrl === newlyReturnedCloudinarySecureUrl
-      });
-
-      if (!serverImageUrl || serverImageUrl !== newlyReturnedCloudinarySecureUrl) {
-        setUrlMatch('NO');
-        setUploadStateMachine('ERROR');
-        throw new Error(`Firestore verification failed: stored image URL ("${serverImageUrl}") does not match the newly returned Cloudinary URL ("${newlyReturnedCloudinarySecureUrl}").`);
-      }
-
-      // ONLY HERE DOES UPLOAD STATUS BECOME SUCCESS
-      setUrlMatch('YES');
-      setUploadStateMachine('SUCCESS');
-      setSavedPopupImageUrl(newlyReturnedCloudinarySecureUrl);
-      setDirectImageUrlInput(newlyReturnedCloudinarySecureUrl);
-      setHasPendingNewImage(false);
-
-      setLocalSiteConfig(prev => ({
-        ...prev,
-        popupEnabled: popupPayload.enabled,
-        popupFrequency: popupPayload.frequency,
-        popupImage: newlyReturnedCloudinarySecureUrl,
-        imageUrl: newlyReturnedCloudinarySecureUrl
-      }));
-
-      // Invalidate existing session/local popup dismissal flags so the new image displays immediately
-      try {
-        sessionStorage.removeItem('popup_dismissed_url');
-        sessionStorage.removeItem('popup_closed');
-        localStorage.removeItem('popup_once_url');
-        localStorage.removeItem('popup_shown_once');
-        localStorage.removeItem('popup_daily_url');
-        localStorage.removeItem('popup_daily_date');
-        localStorage.removeItem('popup_last_shown');
-      } catch (_) {}
-
-      setPopupSaveFeedback({
+      setSavedPopupImageUrl(finalImageUrl);
+      cancelSelectedPopupFile();
+      setPopupFeedback({
         type: 'success',
-        message: `✓ SUCCESS: Cloudinary image URL verified from Firestore server! Stored URL: ${newlyReturnedCloudinarySecureUrl}`
+        message: '✓ Popup configuration saved successfully to settings/popup!'
       });
-      setTimeout(() => setPopupSaveFeedback(null), 8000);
+      setTimeout(() => setPopupFeedback(null), 5000);
     } catch (saveErr: any) {
-      logPopupError('POPUP_SAVE_ERROR', saveErr, { finalImageUrl });
-      setUrlMatch('NO');
-      setUploadStateMachine('ERROR');
-      setPopupSaveFeedback({
+      console.error('Error saving popup:', saveErr);
+      setIsUploadingPopup(false);
+      setPopupFeedback({
         type: 'error',
         message: `❌ ${saveErr.message || 'Failed to save popup configuration.'}`
       });
     } finally {
-      setSavingPopup(false);
+      setIsSavingPopup(false);
     }
   };
 
@@ -1431,420 +1091,162 @@ export default function AdminPanel() {
         
         {/* POPUP MANAGER TAB */}
         {activeTab === 'popup' && (
-          <motion.div initial={{opacity:0, y: 10}} animate={{opacity:1, y:0}} className="space-y-6">
+          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
             <div className="flex justify-between items-end">
               <div>
                 <h2 className="text-2xl font-bold">Popup Manager</h2>
-                <p className="text-sm text-neutral-400">Configure the global image popup for website visitors.</p>
+                <p className="text-sm text-neutral-400">Configure the global announcement popup for website visitors.</p>
               </div>
             </div>
-            
+
             <div className="bg-neutral-900 p-6 rounded-3xl border border-white/10 space-y-6">
-              {/* Top Toggle: Enable / Disable Popup */}
+              {/* Enable / Disable Toggle */}
               <div className="flex items-center justify-between border-b border-white/5 pb-4">
                 <div>
                   <h3 className="font-bold text-white">Enable Popup</h3>
                   <p className="text-xs text-neutral-400">Turn the announcement popup on or off globally for all visitors.</p>
                 </div>
                 <label className="relative inline-flex items-center cursor-pointer">
-                  <input 
-                    type="checkbox" 
-                    checked={popupEnabled} 
-                    onChange={e => {
-                      setPopupEnabled(e.target.checked);
-                      setLocalSiteConfig(prev => ({ ...prev, popupEnabled: e.target.checked }));
-                    }} 
-                    className="sr-only peer" 
+                  <input
+                    type="checkbox"
+                    checked={popupEnabled}
+                    onChange={e => setPopupEnabled(e.target.checked)}
+                    className="sr-only peer"
                   />
                   <div className="w-11 h-6 bg-neutral-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-500"></div>
                 </label>
               </div>
 
-              {/* Form Controls Grid */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="space-y-4">
+              {/* Popup Image Section */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
                   <div>
-                    <label className="text-xs text-neutral-400 mb-1 block font-semibold uppercase tracking-wider">Popup Display Frequency</label>
-                    <select 
-                      value={popupFrequency} 
-                      onChange={e => {
-                        const val = e.target.value as 'session' | 'always' | 'daily' | 'once';
-                        setPopupFrequency(val);
-                        setLocalSiteConfig(prev => ({ ...prev, popupFrequency: val }));
-                      }}
-                      className="w-full bg-black border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:border-amber-500 outline-none"
-                    >
-                      <option value="session">Once Per Session (Recommended)</option>
-                      <option value="always">Every Visit (Always)</option>
-                      <option value="daily">Once Per Day</option>
-                      <option value="once">Only One Time Ever</option>
-                    </select>
-                    <p className="text-[11px] text-neutral-500 mt-1.5">
-                      Controls how often an eligible visitor sees the announcement popup on your site.
-                    </p>
+                    <h3 className="font-bold text-white text-sm">Popup Image</h3>
+                    <p className="text-xs text-neutral-400">Select an image to display inside the announcement popup modal.</p>
                   </div>
-
-                  <div>
-                    <label className="text-xs text-neutral-400 mb-1 block font-semibold uppercase tracking-wider">Direct Image URL (Optional / Fallback)</label>
-                    <input 
-                      type="url"
-                      value={directImageUrlInput}
-                      onChange={e => {
-                        const val = e.target.value;
-                        setDirectImageUrlInput(val);
-                        if (!hasPendingNewImage) {
-                          setPendingPopupImageUrl(null);
-                        }
-                      }}
-                      placeholder="https://example.com/announcement.jpg"
-                      className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white focus:border-amber-500 outline-none font-mono"
-                    />
-                    <p className="text-[11px] text-neutral-500 mt-1.5">
-                      {hasPendingNewImage 
-                        ? 'Notice: A new file is currently selected. The uploaded file takes precedence over direct URLs.' 
-                        : 'You can paste an external image URL directly or upload an image file on the right.'}
-                    </p>
-                  </div>
-                </div>
-
-                {/* Image Upload & Display Card */}
-                <div className="space-y-4">
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <label className="text-xs text-neutral-400 block font-semibold uppercase tracking-wider">Popup Image</label>
-                      <div className="flex items-center gap-2">
-                        {hasPendingNewImage && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (previewObjectUrl) {
-                                try { URL.revokeObjectURL(previewObjectUrl); } catch (_) {}
-                              }
-                              setPreviewObjectUrl(null);
-                              setCloudinarySecureUrl(null);
-                              setPendingPopupImageUrl(null);
-                              setHasPendingNewImage(false);
-                              setSelectedFile(null);
-                              setUploadStateMachine('NOT_STARTED');
-                              setUploadProgress(0);
-                              setUploadError(null);
-                              setUploadErrorCode(null);
-                              setUploadErrorDetails(null);
-                              setUrlMatch('N/A');
-                              setFirestoreServerUrl(null);
-                            }}
-                            className="text-[11px] text-neutral-400 hover:text-white flex items-center gap-1 font-semibold"
-                          >
-                            Cancel New File
-                          </button>
-                        )}
-                        {getActiveDisplayImageUrl() && (
-                          <button 
-                            type="button"
-                            onClick={() => {
-                              if (previewObjectUrl) {
-                                try { URL.revokeObjectURL(previewObjectUrl); } catch (_) {}
-                              }
-                              setPreviewObjectUrl(null);
-                              setCloudinarySecureUrl(null);
-                              setPendingPopupImageUrl(null);
-                              setHasPendingNewImage(false);
-                              setDirectImageUrlInput('');
-                              setSavedPopupImageUrl('');
-                              setSelectedFile(null);
-                              setUploadStateMachine('NOT_STARTED');
-                              setUploadProgress(0);
-                              setUploadError(null);
-                              setUploadErrorCode(null);
-                              setUploadErrorDetails(null);
-                              setUrlMatch('N/A');
-                              setFirestoreServerUrl(null);
-                              setLocalSiteConfig(prev => ({ ...prev, popupImage: '', imageUrl: '' }));
-                            }} 
-                            className="text-[11px] text-red-400 hover:text-red-300 flex items-center gap-1 font-semibold"
-                          >
-                            <Trash2 size={12} /> Remove Image
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    {getActiveDisplayImageUrl() ? (
-                      <div className="relative w-full h-56 bg-black rounded-xl overflow-hidden border border-white/10 flex items-center justify-center p-2 group">
-                        <img 
-                          src={getActiveDisplayImageUrl()!} 
-                          alt="Popup Preview" 
-                          className="max-w-full max-h-full object-contain rounded-lg" 
-                        />
-                        <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between px-3 py-1.5 bg-black/80 backdrop-blur-md rounded-lg text-[11px] text-neutral-300">
-                          <span className="truncate">
-                            {hasPendingNewImage 
-                              ? (pendingPopupImageUrl 
-                                  ? 'New image uploaded ✓ Ready to save' 
-                                  : previewObjectUrl 
-                                    ? (uploadStateMachine === 'UPLOAD_FAILED' ? 'Upload failed — Not yet saved' : 'New file selected (Local preview)')
-                                    : 'Pending new upload')
-                              : (savedPopupImageUrl ? 'Saved in Firestore' : 'Direct URL configured')}
-                          </span>
-                          <label className="text-amber-400 hover:text-amber-300 cursor-pointer font-semibold shrink-0 ml-2">
-                            Replace
-                            <input 
-                              ref={popupFileInputRef}
-                              type="file" 
-                              accept="image/*" 
-                              onChange={handlePopupImageFileSelection} 
-                              disabled={uploadStateMachine === 'UPLOADING' || savingPopup}
-                              className="hidden" 
-                            />
-                          </label>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="w-full h-56 bg-black border border-white/10 rounded-xl px-4 py-3 text-sm text-neutral-500 relative flex items-center justify-center hover:border-amber-500/50 transition-colors border-dashed">
-                        <input 
-                          type="file" 
-                          accept="image/*" 
-                          onChange={handlePopupImageFileSelection} 
-                          disabled={uploadStateMachine === 'UPLOADING' || savingPopup} 
-                          className="absolute inset-0 opacity-0 cursor-pointer disabled:cursor-not-allowed" 
-                        />
-                        <div className="flex flex-col items-center gap-2 pointer-events-none text-center px-4">
-                          <ImageIcon size={28} className="text-neutral-500" />
-                          <span className="text-xs font-semibold text-neutral-300">
-                            Click or drag an image here to upload
-                          </span>
-                          <span className="text-[10px] text-neutral-500">
-                            Supports PNG, JPG, WebP up to 15MB
-                          </span>
-                        </div>
-                      </div>
+                  <div className="flex items-center gap-2">
+                    {selectedPopupFile && (
+                      <button
+                        type="button"
+                        onClick={cancelSelectedPopupFile}
+                        className="text-xs text-neutral-400 hover:text-white px-2.5 py-1 rounded-lg bg-neutral-800 transition-colors"
+                      >
+                        Cancel New File
+                      </button>
+                    )}
+                    {getActivePopupDisplayUrl() && (
+                      <button
+                        type="button"
+                        onClick={removePopupImage}
+                        className="text-xs text-red-400 hover:text-red-300 px-2.5 py-1 rounded-lg bg-red-500/10 transition-colors flex items-center gap-1 font-semibold"
+                      >
+                        <Trash2 size={13} /> Remove Image
+                      </button>
                     )}
                   </div>
                 </div>
-              </div>
 
-              {/* Real-time Progress Bar & Status Details */}
-              <div className="rounded-xl bg-black/50 border border-white/10 p-4 space-y-3">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="font-semibold text-neutral-300">Upload Status:</span>
-                  <span className={`font-mono font-bold ${
-                    uploadStateMachine === 'UPLOADING' ? 'text-amber-400' :
-                    uploadStateMachine === 'READY_TO_SAVE' || uploadStateMachine === 'UPLOAD_SUCCESS' ? 'text-green-400' :
-                    uploadStateMachine === 'UPLOAD_FAILED' || uploadStateMachine === 'ERROR' ? 'text-red-400' :
-                    uploadStateMachine === 'SAVING' || uploadStateMachine === 'VERIFYING' ? 'text-cyan-400' :
-                    uploadStateMachine === 'SUCCESS' ? 'text-emerald-400' : 'text-neutral-400'
-                  }`}>
-                    {uploadStateMachine === 'NOT_STARTED' && 'NOT STARTED'}
-                    {uploadStateMachine === 'FILE_SELECTED' && 'FILE SELECTED'}
-                    {uploadStateMachine === 'VALIDATING' && 'VALIDATING IMAGE...'}
-                    {uploadStateMachine === 'UPLOADING' && `UPLOADING TO CLOUDINARY (${uploadProgress}%)`}
-                    {uploadStateMachine === 'UPLOAD_SUCCESS' && 'UPLOAD COMPLETE ✓'}
-                    {uploadStateMachine === 'READY_TO_SAVE' && 'UPLOAD COMPLETE ✓ READY TO SAVE'}
-                    {uploadStateMachine === 'SAVING' && 'SAVING TO FIRESTORE...'}
-                    {uploadStateMachine === 'VERIFYING' && 'VERIFYING SERVER READBACK...'}
-                    {uploadStateMachine === 'SUCCESS' && 'SUCCESS ✓'}
-                    {uploadStateMachine === 'UPLOAD_FAILED' && 'UPLOAD FAILED ✕'}
-                    {uploadStateMachine === 'ERROR' && 'ERROR ✕'}
-                  </span>
-                </div>
-
-                {uploadStateMachine === 'UPLOADING' && (
-                  <div className="space-y-1.5">
-                    <div className="w-full bg-neutral-800 rounded-full h-2.5 overflow-hidden">
-                      <div 
-                        className="bg-amber-500 h-full rounded-full transition-all duration-200 ease-out" 
-                        style={{ width: `${uploadProgress}%` }}
-                      />
+                {getActivePopupDisplayUrl() ? (
+                  <div className="relative w-full h-64 bg-black rounded-2xl overflow-hidden border border-white/10 flex items-center justify-center p-3 group">
+                    <img
+                      src={getActivePopupDisplayUrl()}
+                      alt="Popup Preview"
+                      className="max-w-full max-h-full object-contain rounded-lg"
+                    />
+                    <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between px-3.5 py-2 bg-black/80 backdrop-blur-md rounded-xl text-xs text-neutral-300 border border-white/10">
+                      <span className="truncate">
+                        {selectedPopupFile ? (
+                          <span className="text-amber-400 font-semibold">
+                            New file: {selectedPopupFile.name} (Uploads on Save)
+                          </span>
+                        ) : (
+                          <span className="text-green-400 font-semibold">Current Saved Image</span>
+                        )}
+                      </span>
+                      <label className="text-amber-400 hover:text-amber-300 cursor-pointer font-bold shrink-0 ml-2">
+                        Replace Image
+                        <input
+                          ref={popupFileInputRef}
+                          type="file"
+                          accept="image/jpeg,image/png,image/webp,image/jpg"
+                          onChange={handlePopupImageFileSelection}
+                          disabled={isSavingPopup || isUploadingPopup}
+                          className="hidden"
+                        />
+                      </label>
                     </div>
-                    <div className="flex justify-between text-[11px] text-neutral-400 font-mono">
-                      <span>Uploading to Cloudinary</span>
-                      <span>
-                        {uploadProgress}% • {(bytesTransferred / 1024).toFixed(1)} KB / {(totalBytes / 1024).toFixed(1)} KB
+                  </div>
+                ) : (
+                  <div className="w-full h-56 bg-black border border-white/10 rounded-2xl px-4 py-3 text-sm text-neutral-500 relative flex items-center justify-center hover:border-amber-500/50 transition-colors border-dashed">
+                    <input
+                      ref={popupFileInputRef}
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp,image/jpg"
+                      onChange={handlePopupImageFileSelection}
+                      disabled={isSavingPopup || isUploadingPopup}
+                      className="absolute inset-0 opacity-0 cursor-pointer disabled:cursor-not-allowed"
+                    />
+                    <div className="flex flex-col items-center gap-2 pointer-events-none text-center px-4">
+                      <ImageIcon size={32} className="text-neutral-500" />
+                      <span className="text-sm font-semibold text-neutral-300">
+                        Click or drag an image here to upload
+                      </span>
+                      <span className="text-xs text-neutral-500">
+                        Supports JPG, PNG, WebP up to 15MB
                       </span>
                     </div>
                   </div>
                 )}
+              </div>
 
-                {(uploadStateMachine === 'READY_TO_SAVE' || uploadStateMachine === 'UPLOAD_SUCCESS') && (
-                  <div className="text-xs text-green-400 flex items-center gap-2 bg-green-500/10 border border-green-500/20 rounded-lg p-3">
+              {/* Upload Progress Bar if Uploading */}
+              {isUploadingPopup && (
+                <div className="rounded-2xl bg-black/60 border border-amber-500/20 p-4 space-y-2">
+                  <div className="flex items-center justify-between text-xs text-amber-400 font-semibold">
+                    <span className="flex items-center gap-2">
+                      <RefreshCw size={14} className="animate-spin" /> Uploading image to Cloudinary...
+                    </span>
+                    <span>{popupUploadProgress}%</span>
+                  </div>
+                  <div className="w-full bg-neutral-800 rounded-full h-2 overflow-hidden">
+                    <div
+                      className="bg-amber-500 h-full rounded-full transition-all duration-200"
+                      style={{ width: `${popupUploadProgress}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Feedback Alert Banner */}
+              {popupFeedback && (
+                <div
+                  className={`p-4 rounded-2xl text-xs font-semibold flex items-center gap-2.5 ${
+                    popupFeedback.type === 'success'
+                      ? 'bg-green-500/10 border border-green-500/30 text-green-400'
+                      : 'bg-red-500/10 border border-red-500/30 text-red-400'
+                  }`}
+                >
+                  {popupFeedback.type === 'success' ? (
                     <CheckCircle2 size={16} className="shrink-0" />
-                    <span>Cloudinary upload complete ✓ Ready to save. Click <strong>Save Popup Config</strong> below to publish to the site.</span>
-                  </div>
-                )}
-
-                {uploadStateMachine === 'UPLOAD_FAILED' && (
-                  <div className="space-y-3 bg-red-500/10 border border-red-500/25 rounded-xl p-4 text-xs text-red-300">
-                    <div className="flex items-start gap-2.5">
-                      <XCircle size={18} className="text-red-400 shrink-0 mt-0.5" />
-                      <div className="space-y-2 flex-1">
-                        <div className="font-bold text-sm text-red-400">
-                          {uploadErrorDetails?.title || 'Cloudinary Upload Failed'}
-                        </div>
-                        {uploadErrorCode && (
-                          <div className="bg-black/40 px-2.5 py-1.5 rounded-lg border border-red-500/20 font-mono text-[11px] text-red-300">
-                            <strong className="text-red-400">Status:</strong> {uploadErrorCode}
-                          </div>
-                        )}
-                        <div className="bg-black/40 px-2.5 py-1.5 rounded-lg border border-red-500/20 font-mono text-[11px] text-red-200">
-                          <strong className="text-red-400">Error Message:</strong> {uploadError || 'Upload request failed.'}
-                        </div>
-                        {uploadErrorDetails && (
-                          <div className="space-y-1 text-[11px] text-red-300/90 leading-relaxed border-t border-red-500/15 pt-2">
-                            <div><strong className="text-red-400">Explanation:</strong> {uploadErrorDetails.explanation}</div>
-                            <div><strong className="text-red-400">Action Required:</strong> {uploadErrorDetails.action}</div>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                    <div className="pt-2 border-t border-red-500/15 flex items-center justify-between">
-                      <span className="text-[11px] text-neutral-400 italic">Save is blocked while an upload is failed.</span>
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (previewObjectUrl) {
-                              try { URL.revokeObjectURL(previewObjectUrl); } catch (_) {}
-                            }
-                            setPreviewObjectUrl(null);
-                            setCloudinarySecureUrl(null);
-                            setPendingPopupImageUrl(null);
-                            setHasPendingNewImage(false);
-                            setSelectedFile(null);
-                            setUploadStateMachine('NOT_STARTED');
-                            setUploadProgress(0);
-                            setUploadError(null);
-                            setUploadErrorCode(null);
-                            setUploadErrorDetails(null);
-                            setUrlMatch('N/A');
-                            setFirestoreServerUrl(null);
-                          }}
-                          className="px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 rounded-lg text-xs font-semibold transition-colors"
-                        >
-                          Cancel New File
-                        </button>
-                        {selectedFile && (
-                          <button
-                            type="button"
-                            onClick={() => startUploadFlow(selectedFile)}
-                            className="px-3 py-1.5 bg-red-500/20 hover:bg-red-500/30 text-red-200 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors"
-                          >
-                            <RefreshCw size={12} /> Retry Upload
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Section 18: Diagnostics and Technical Information */}
-                <div className="pt-3 border-t border-white/10 space-y-2">
-                  <div className="text-xs font-bold text-neutral-300 uppercase tracking-wider flex items-center justify-between">
-                    <span>Popup Diagnostics</span>
-                    <span className="font-mono text-[10px] text-amber-400">Cloudinary Pipeline</span>
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] font-mono">
-                    <div className="bg-black/60 p-2.5 rounded-lg border border-white/5 truncate">
-                      <span className="text-neutral-500 block text-[10px] uppercase font-sans font-semibold">FILE SELECTED:</span>
-                      <span className={selectedFile ? 'text-green-400 font-bold' : 'text-neutral-400'} title={selectedFile?.name || '(None selected)'}>
-                        {selectedFile ? `${selectedFile.name} (${(selectedFile.size / 1024).toFixed(1)} KB)` : '(None selected)'}
-                      </span>
-                    </div>
-                    <div className="bg-black/60 p-2.5 rounded-lg border border-white/5">
-                      <span className="text-neutral-500 block text-[10px] uppercase font-sans font-semibold">CLOUDINARY UPLOAD:</span>
-                      <span className={`font-bold ${
-                        uploadStateMachine === 'UPLOADING' ? 'text-amber-400' :
-                        (cloudinarySecureUrl || pendingPopupImageUrl) ? 'text-green-400' :
-                        uploadStateMachine === 'UPLOAD_FAILED' ? 'text-red-400' : 'text-neutral-400'
-                      }`}>
-                        {uploadStateMachine === 'UPLOADING' ? `IN PROGRESS (${uploadProgress}%)` :
-                         (cloudinarySecureUrl || pendingPopupImageUrl) ? 'COMPLETED ✓' :
-                         uploadStateMachine === 'UPLOAD_FAILED' ? 'FAILED ✕' : 'NOT STARTED'}
-                      </span>
-                    </div>
-                    <div className="bg-black/60 p-2.5 rounded-lg border border-white/5 truncate">
-                      <span className="text-neutral-500 block text-[10px] uppercase font-sans font-semibold">CLOUDINARY SECURE URL:</span>
-                      <span className={(cloudinarySecureUrl || pendingPopupImageUrl) ? 'text-green-400 font-bold' : 'text-neutral-400'} title={(cloudinarySecureUrl || pendingPopupImageUrl) || '(Not uploaded yet)'}>
-                        {(cloudinarySecureUrl || pendingPopupImageUrl) ? (cloudinarySecureUrl || pendingPopupImageUrl) : '(Not uploaded yet)'}
-                      </span>
-                    </div>
-                    <div className="bg-black/60 p-2.5 rounded-lg border border-white/5">
-                      <span className="text-neutral-500 block text-[10px] uppercase font-sans font-semibold">FIRESTORE SAVE:</span>
-                      <span className={`font-bold ${
-                        uploadStateMachine === 'SAVING' ? 'text-cyan-400' :
-                        (uploadStateMachine === 'VERIFYING' || uploadStateMachine === 'SUCCESS') ? 'text-green-400' :
-                        (uploadStateMachine === 'ERROR' && savingPopup) ? 'text-red-400' : 'text-neutral-400'
-                      }`}>
-                        {uploadStateMachine === 'SAVING' ? 'SAVING TO settings/popup...' :
-                         (uploadStateMachine === 'VERIFYING' || uploadStateMachine === 'SUCCESS') ? 'SAVED TO settings/popup ✓' :
-                         (uploadStateMachine === 'ERROR' && savingPopup) ? 'SAVE FAILED ✕' : 'PENDING SAVE'}
-                      </span>
-                    </div>
-                    <div className="bg-black/60 p-2.5 rounded-lg border border-white/5 truncate">
-                      <span className="text-neutral-500 block text-[10px] uppercase font-sans font-semibold">SERVER READBACK:</span>
-                      <span className={firestoreServerUrl ? 'text-neutral-200' : 'text-neutral-400'} title={firestoreServerUrl || '(Not yet read from server)'}>
-                        {firestoreServerUrl ? firestoreServerUrl : '(Not yet read from server)'}
-                      </span>
-                    </div>
-                    <div className="bg-black/60 p-2.5 rounded-lg border border-white/5 flex items-center justify-between">
-                      <span className="text-neutral-500 text-[10px] uppercase font-sans font-semibold">FINAL MATCH:</span>
-                      <span className={`font-bold text-xs ${
-                        (urlMatch === 'YES' && (cloudinarySecureUrl || pendingPopupImageUrl) && firestoreServerUrl === (cloudinarySecureUrl || pendingPopupImageUrl)) ? 'text-green-400' :
-                        (urlMatch === 'NO' || (uploadStateMachine === 'ERROR' && firestoreServerUrl)) ? 'text-red-400' : 'text-neutral-400'
-                      }`}>
-                        {(urlMatch === 'YES' && (cloudinarySecureUrl || pendingPopupImageUrl) && firestoreServerUrl === (cloudinarySecureUrl || pendingPopupImageUrl))
-                          ? 'VERIFIED MATCH ✓'
-                          : urlMatch === 'NO' ? 'MISMATCH ✕' : 'NOT VERIFIED'}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {hasPendingNewImage && !pendingPopupImageUrl && (
-                <div className="p-3.5 rounded-xl text-xs font-semibold flex items-center gap-2 bg-amber-500/10 border border-amber-500/25 text-amber-300">
-                  <AlertCircle size={16} className="shrink-0 text-amber-400" />
-                  <span>New image has not finished uploading. Please wait or retry.</span>
+                  ) : (
+                    <AlertCircle size={16} className="shrink-0" />
+                  )}
+                  <span>{popupFeedback.message}</span>
                 </div>
               )}
 
-              {popupSaveFeedback && (
-                <div className={`p-4 rounded-2xl text-xs font-bold flex items-center gap-2.5 ${
-                  popupSaveFeedback.type === 'success' 
-                    ? 'bg-green-500/10 border border-green-500/30 text-green-400' 
-                    : 'bg-red-500/10 border border-red-500/30 text-red-400'
-                }`}>
-                  {popupSaveFeedback.type === 'success' ? <CheckCircle2 size={16} className="shrink-0" /> : <XCircle size={16} className="shrink-0" />}
-                  <span>{popupSaveFeedback.message}</span>
-                </div>
-              )}
-
-              {/* Action Buttons */}
+              {/* Actions: Save & Preview */}
               <div className="pt-4 border-t border-white/5 flex flex-wrap items-center gap-4">
-                <button 
+                <button
                   type="button"
-                  onClick={() => setShowSaveConfirmModal(true)} 
-                  disabled={uploadStateMachine === 'UPLOADING' || uploadStateMachine === 'VALIDATING' || (hasPendingNewImage && !pendingPopupImageUrl) || savingPopup}
+                  onClick={executeSavePopup}
+                  disabled={isSavingPopup || isUploadingPopup}
                   className="bg-amber-500 text-black font-bold py-3 px-6 rounded-xl hover:bg-amber-400 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {uploadStateMachine === 'UPLOADING' ? (
+                  {isSavingPopup || isUploadingPopup ? (
                     <>
                       <RefreshCw className="animate-spin" size={16} />
-                      <span>Uploading image... {uploadProgress}%</span>
-                    </>
-                  ) : savingPopup ? (
-                    <>
-                      <RefreshCw className="animate-spin" size={16} />
-                      <span>Saving & Verifying...</span>
-                    </>
-                  ) : (uploadStateMachine === 'READY_TO_SAVE' || uploadStateMachine === 'UPLOAD_SUCCESS') ? (
-                    <>
-                      <Save size={16} />
-                      <span>Save & Publish New Image</span>
-                    </>
-                  ) : (hasPendingNewImage && !pendingPopupImageUrl) ? (
-                    <>
-                      <Save size={16} />
-                      <span>Upload Incomplete — Save Blocked</span>
+                      <span>{isUploadingPopup ? 'Uploading...' : 'Saving...'}</span>
                     </>
                   ) : (
                     <>
@@ -1854,9 +1256,9 @@ export default function AdminPanel() {
                   )}
                 </button>
 
-                <button 
+                <button
                   type="button"
-                  onClick={() => setShowPopupPreview(true)} 
+                  onClick={() => setShowPopupPreview(true)}
                   className="bg-neutral-800 text-white font-bold py-3 px-6 rounded-xl hover:bg-neutral-700 transition-colors flex items-center gap-2"
                 >
                   <Eye size={16} /> Preview Modal
@@ -1867,91 +1269,24 @@ export default function AdminPanel() {
             {/* Popup Full Preview Modal */}
             {showPopupPreview && typeof document !== 'undefined' && createPortal(
               <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
-                <div className="relative max-w-md md:max-w-xl w-full flex flex-col items-center justify-center rounded-3xl overflow-hidden shadow-2xl">
-                  <button onClick={() => setShowPopupPreview(false)} className="absolute top-4 right-4 z-10 p-2 bg-black/50 hover:bg-black/80 text-white rounded-full transition-colors backdrop-blur-md">
+                <div className="relative max-w-md md:max-w-xl w-full flex flex-col items-center justify-center rounded-3xl overflow-hidden shadow-2xl bg-neutral-950 border border-white/10">
+                  <button
+                    onClick={() => setShowPopupPreview(false)}
+                    className="absolute top-4 right-4 z-10 p-2 bg-black/60 hover:bg-black/80 text-white rounded-full transition-colors backdrop-blur-md"
+                  >
                     <X size={20} />
                   </button>
-                  {getActiveDisplayImageUrl() ? (
-                    <img 
-                      src={getActiveDisplayImageUrl()!} 
-                      alt="Announcement Preview" 
-                      className="w-full object-contain max-h-[85vh] bg-black" 
+                  {getActivePopupDisplayUrl() ? (
+                    <img
+                      src={getActivePopupDisplayUrl()}
+                      alt="Announcement Preview"
+                      className="w-full object-contain max-h-[85vh] bg-black"
                     />
                   ) : (
-                    <div className="w-full h-64 bg-neutral-900 flex items-center justify-center text-neutral-500">No image configured</div>
+                    <div className="w-full h-64 bg-neutral-900 flex items-center justify-center text-neutral-500">
+                      No image configured
+                    </div>
                   )}
-                </div>
-              </div>,
-              document.body
-            )}
-
-            {/* Save Popup Confirmation Modal */}
-            {showSaveConfirmModal && typeof document !== 'undefined' && createPortal(
-              <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
-                <div className="relative max-w-md w-full bg-neutral-900 border border-white/15 rounded-3xl p-6 shadow-2xl space-y-5">
-                  <div className="flex items-center justify-between border-b border-white/10 pb-3">
-                    <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                      <Save size={18} className="text-amber-500" /> Confirm Popup Configuration
-                    </h3>
-                    <button 
-                      onClick={() => setShowSaveConfirmModal(false)}
-                      disabled={savingPopup}
-                      className="text-neutral-400 hover:text-white transition-colors"
-                    >
-                      <X size={18} />
-                    </button>
-                  </div>
-
-                  <div className="space-y-3 text-xs text-neutral-300">
-                    <div className="flex justify-between py-1.5 border-b border-white/5">
-                      <span className="text-neutral-400">Popup Status:</span>
-                      <span className={`font-bold ${popupEnabled ? 'text-green-400' : 'text-neutral-400'}`}>
-                        {popupEnabled ? 'Enabled' : 'Disabled'}
-                      </span>
-                    </div>
-                    <div className="flex justify-between py-1.5 border-b border-white/5">
-                      <span className="text-neutral-400">Frequency:</span>
-                      <span className="font-bold text-white capitalize">
-                        {popupFrequency === 'session' ? 'Once Per Session' :
-                         popupFrequency === 'always' ? 'Every Visit' :
-                         popupFrequency === 'daily' ? 'Once Per Day' : 'Only One Time Ever'}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-neutral-400 block mb-1.5">Target Image:</span>
-                      {getActiveDisplayImageUrl() ? (
-                        <div className="w-full h-36 bg-black rounded-xl overflow-hidden border border-white/10 flex items-center justify-center p-2">
-                          <img 
-                            src={getActiveDisplayImageUrl()!} 
-                            alt="Target Popup" 
-                            className="max-w-full max-h-full object-contain rounded-lg" 
-                          />
-                        </div>
-                      ) : (
-                        <span className="text-amber-400 italic">No image configured (Popup cannot be enabled without an image)</span>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-end gap-3 pt-2">
-                    <button
-                      type="button"
-                      onClick={() => setShowSaveConfirmModal(false)}
-                      disabled={savingPopup}
-                      className="px-4 py-2.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 rounded-xl font-semibold text-xs transition-colors"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => executeSavePopup()}
-                      disabled={savingPopup || (Boolean(hasPendingNewImage || selectedFile) && !pendingPopupImageUrl) || (popupEnabled && !getActiveDisplayImageUrl())}
-                      className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-black font-bold rounded-xl text-xs flex items-center gap-2 transition-colors disabled:opacity-50"
-                    >
-                      {savingPopup ? <RefreshCw size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
-                      {savingPopup ? 'Publishing & Verifying...' : 'Confirm & Publish'}
-                    </button>
-                  </div>
                 </div>
               </div>,
               document.body
