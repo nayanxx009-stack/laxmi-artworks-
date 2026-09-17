@@ -8,7 +8,7 @@ import { auth, googleProvider, db } from '../lib/firebase';
 import { collection, getDocs, doc, updateDoc, deleteDoc, query, orderBy, setDoc, getDoc, getDocFromServer, limit, onSnapshot } from 'firebase/firestore';
 import { uploadToCloudinary } from '../lib/cloudinary';
 import jsPDF from 'jspdf';
-import { Shield, Truck, Download, LogOut, CheckCircle2, Clock, Calendar, XCircle, Trash2, Edit2, Save, X, RefreshCw, Eye, LayoutDashboard, Settings, Users, ArrowRight, Paintbrush, Loader2, Link2, Lock, Plus, Image as ImageIcon, Mail, MessageSquare, IndianRupee, UploadCloud, Bell, AlertCircle } from 'lucide-react';
+import { Shield, Truck, Download, LogOut, CheckCircle2, Clock, Calendar, XCircle, Trash2, Edit2, Save, X, RefreshCw, Eye, LayoutDashboard, Settings, Users, ArrowRight, Paintbrush, Loader2, Link2, Lock, Plus, Image as ImageIcon, Mail, MessageSquare, IndianRupee, UploadCloud, Bell, AlertCircle, ExternalLink } from 'lucide-react';
 import AdminAnalytics from './AdminAnalytics';
 import AdminBackup from './AdminBackup';
 import AdminChat from './AdminChat';
@@ -107,6 +107,7 @@ export default function AdminPanel() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<any>({});
   const [selectedOrder, setSelectedOrder] = useState<any>(null);
+  const [viewingRefPhoto, setViewingRefPhoto] = useState<string | null>(null);
 
   const siteConfig = useSiteConfig();
   const [localSiteConfig, setLocalSiteConfig] = useState<SiteConfig>(defaultSiteConfig);
@@ -950,6 +951,24 @@ export default function AdminPanel() {
                               <div className="font-semibold text-sm text-white">{order.name}</div>
                               <div className="text-xs text-neutral-400">{order.email}</div>
                               <div className="text-xs text-neutral-400">{order.phone}</div>
+                              {order.referencePhotoUrl && (
+                                <div className="mt-2 flex items-center gap-2">
+                                  <img 
+                                    src={order.referencePhotoUrl} 
+                                    alt="Ref" 
+                                    className="w-8 h-8 rounded-lg object-cover border border-white/10 cursor-pointer hover:border-amber-500 hover:scale-105 transition-all shrink-0"
+                                    onClick={(e) => { e.stopPropagation(); setViewingRefPhoto(order.referencePhotoUrl); }}
+                                    title="Click to view full reference photo"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={(e) => { e.stopPropagation(); setViewingRefPhoto(order.referencePhotoUrl); }}
+                                    className="text-[11px] text-amber-400 hover:text-amber-300 hover:underline font-medium cursor-pointer flex items-center gap-1"
+                                  >
+                                    <ImageIcon size={11} /> Ref Photo
+                                  </button>
+                                </div>
+                              )}
                             </td>
                             <td className="p-5 align-top">
                               <select 
@@ -1592,12 +1611,59 @@ export default function AdminPanel() {
                 <div>
                   <h4 className="text-sm font-bold text-neutral-400 mb-2 uppercase tracking-wider">Artwork Details</h4>
                   <div className="bg-black p-4 rounded-xl border border-white/5 grid grid-cols-2 gap-4 text-sm">
-                    <div><span className="text-neutral-500 block mb-1">Subject:</span> {selectedOrder.subject}</div>
-                    <div><span className="text-neutral-500 block mb-1">Size:</span> {selectedOrder.size}</div>
-                    <div><span className="text-neutral-500 block mb-1">Medium:</span> {selectedOrder.medium}</div>
-                    <div><span className="text-neutral-500 block mb-1">Framing:</span> {selectedOrder.framing}</div>
+                    <div><span className="text-neutral-500 block mb-1">Subject:</span> {selectedOrder.subject || selectedOrder.artCode || 'Custom Commission'}</div>
+                    <div><span className="text-neutral-500 block mb-1">Size:</span> {selectedOrder.size || 'Custom Size'}</div>
+                    <div><span className="text-neutral-500 block mb-1">Medium:</span> {selectedOrder.medium || 'Handmade Artwork'}</div>
+                    <div><span className="text-neutral-500 block mb-1">Framing:</span> {selectedOrder.framing || 'Standard'}</div>
+                    {selectedOrder.message && (
+                      <div className="col-span-2 pt-2 border-t border-white/5">
+                        <span className="text-neutral-500 block mb-1">Client Vision / Specifications:</span>
+                        <p className="text-neutral-300 whitespace-pre-wrap">{selectedOrder.message}</p>
+                      </div>
+                    )}
                   </div>
                 </div>
+
+                {/* Reference Photo Section (Only shown when that particular order has referencePhotoUrl) */}
+                {selectedOrder.referencePhotoUrl && (
+                  <div id="admin-reference-photo-section">
+                    <h4 className="text-sm font-bold text-neutral-400 mb-2 uppercase tracking-wider">Reference Photo</h4>
+                    <div className="bg-black p-4 rounded-xl border border-white/5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                      <div className="flex items-center gap-4 min-w-0">
+                        <img 
+                          src={selectedOrder.referencePhotoUrl} 
+                          alt={`Reference for order ${selectedOrder.orderId || selectedOrder.id}`} 
+                          className="w-16 h-16 object-cover rounded-lg border border-white/10 cursor-pointer hover:opacity-85 hover:border-amber-500 transition-all shrink-0"
+                          onClick={() => setViewingRefPhoto(selectedOrder.referencePhotoUrl)}
+                          title="Click for full view"
+                        />
+                        <div className="min-w-0">
+                          <p className="text-xs font-semibold text-white truncate">Client Reference Artwork</p>
+                          <p className="text-[11px] text-neutral-400 mt-0.5">Uploaded during commission enquiry</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto">
+                        <button 
+                          type="button"
+                          id="btn-admin-view-ref-full"
+                          onClick={() => setViewingRefPhoto(selectedOrder.referencePhotoUrl)}
+                          className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-semibold bg-white/10 hover:bg-amber-500 hover:text-black text-white transition-colors cursor-pointer"
+                        >
+                          <Eye size={14} /> Full View
+                        </button>
+                        <a 
+                          href={selectedOrder.referencePhotoUrl} 
+                          target="_blank" 
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center justify-center p-2 rounded-lg text-neutral-400 hover:text-white hover:bg-white/10 transition-colors"
+                          title="Open original image in new tab"
+                        >
+                          <ExternalLink size={16} />
+                        </a>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 <div>
                   <h4 className="text-sm font-bold text-neutral-400 mb-2 uppercase tracking-wider">Shipping Address</h4>
@@ -1784,6 +1850,45 @@ export default function AdminPanel() {
                 Sign Out
               </button>
             </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* FULL REFERENCE PHOTO LIGHTBOX */}
+      {typeof document !== 'undefined' && viewingRefPhoto && createPortal(
+        <div 
+          className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/95 backdrop-blur-md animate-in fade-in duration-200"
+          onClick={() => setViewingRefPhoto(null)}
+        >
+          <div 
+            className="relative max-w-5xl max-h-[90vh] flex flex-col items-center justify-center"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="absolute -top-12 right-0 flex items-center gap-2 z-10">
+              <a
+                href={viewingRefPhoto}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="py-1.5 px-3 rounded-full bg-black/80 hover:bg-white/20 text-white transition-colors border border-white/10 inline-flex items-center gap-1.5 text-xs font-medium"
+                title="Open original in new tab"
+              >
+                <ExternalLink size={14} /> Open Original
+              </a>
+              <button 
+                type="button"
+                onClick={() => setViewingRefPhoto(null)} 
+                className="p-1.5 rounded-full bg-black/80 hover:bg-white/20 text-white transition-colors border border-white/10 cursor-pointer"
+                title="Close lightbox"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <img 
+              src={viewingRefPhoto} 
+              alt="Full Reference" 
+              className="max-h-[82vh] max-w-full object-contain rounded-2xl border border-white/10 shadow-2xl" 
+            />
           </div>
         </div>,
         document.body

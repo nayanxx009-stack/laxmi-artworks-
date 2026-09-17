@@ -17,12 +17,15 @@ import {
   AlertCircle, 
   Zap, 
   Lock,
-  ExternalLink
+  ExternalLink,
+  Upload,
+  Image as ImageIcon
 } from 'lucide-react';
-import { FormEvent, useState, useEffect } from "react";
+import { FormEvent, useState, useEffect, useRef, ChangeEvent } from "react";
 import { useAuth } from '../lib/auth';
 import { db } from '../lib/firebase';
 import { collection, doc, updateDoc, setDoc, onSnapshot } from 'firebase/firestore';
+import { uploadToCloudinary } from '../lib/cloudinary';
 
 const UPI_ID = '7086358990@fam';
 const PAYEE_NAME = 'Laxmi Artworks';
@@ -40,6 +43,65 @@ export default function Contact() {
     subject: '',
     message: ''
   });
+
+  // Reference Photo State
+  const [referenceFile, setReferenceFile] = useState<File | null>(null);
+  const [referencePreview, setReferencePreview] = useState<string | null>(null);
+  const [referenceUploadStatus, setReferenceUploadStatus] = useState<string>('');
+  const [referenceError, setReferenceError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleReferenceFileChange = (e: ChangeEvent<HTMLInputElement>) => {
+    setReferenceError(null);
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Validation: Exactly 1 file, JPG, JPEG, PNG, WEBP
+    const validTypes = ['image/jpeg', 'image/png', 'image/webp'];
+    const validExtensions = ['.jpg', '.jpeg', '.png', '.webp'];
+    const lowerName = file.name.toLowerCase();
+    const hasValidExt = validExtensions.some(ext => lowerName.endsWith(ext));
+    const hasValidMime = validTypes.includes(file.type);
+
+    if (!hasValidExt && !hasValidMime) {
+      setReferenceError('Please select a JPG, PNG, or WEBP image.');
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+
+    // Reasonable max file size: 10MB
+    const MAX_SIZE_MB = 10;
+    if (file.size > MAX_SIZE_MB * 1024 * 1024) {
+      setReferenceError('Please choose a smaller image.');
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+
+    setReferenceFile(file);
+    const objectUrl = URL.createObjectURL(file);
+    setReferencePreview(objectUrl);
+  };
+
+  const handleRemoveReferenceFile = () => {
+    if (referencePreview) {
+      URL.revokeObjectURL(referencePreview);
+    }
+    setReferenceFile(null);
+    setReferencePreview(null);
+    setReferenceError(null);
+    setReferenceUploadStatus('');
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (referencePreview) {
+        URL.revokeObjectURL(referencePreview);
+      }
+    };
+  }, [referencePreview]);
 
   // Payment State Management
   const [showPaymentModal, setShowPaymentModal] = useState(false);
@@ -175,6 +237,28 @@ export default function Contact() {
     }
     setFieldErrors({});
     setStatus('sending');
+    setReferenceError(null);
+
+    let referencePhotoUrl: string | undefined = undefined;
+
+    // STEP 0: Optional Reference Photo Upload to Cloudinary
+    if (referenceFile) {
+      try {
+        setReferenceUploadStatus('Uploading reference...');
+        const uploadResult = await uploadToCloudinary(referenceFile, { folder: 'references' });
+        if (!uploadResult?.secure_url) {
+          throw new Error('No secure URL returned from Cloudinary');
+        }
+        referencePhotoUrl = uploadResult.secure_url;
+        setReferenceUploadStatus('Reference uploaded');
+      } catch (uploadErr: any) {
+        console.error('Failed to upload reference photo:', uploadErr);
+        setStatus('idle');
+        setReferenceUploadStatus('');
+        setReferenceError(uploadErr?.message || 'Reference photo upload failed. Please try again.');
+        return;
+      }
+    }
 
     // STEP 1: Generate unique order ID, payment ID, and unique ART CODE
     const artCode = generateArtCode();
@@ -203,8 +287,10 @@ export default function Contact() {
         email: object.email.toLowerCase(),
         phone: object.phone,
         message: object.message,
-        userId: user ? user.uid : "guest_" + Date.now()
-      }
+        userId: user ? user.uid : "guest_" + Date.now(),
+        ...(referencePhotoUrl ? { referencePhotoUrl } : {})
+      },
+      ...(referencePhotoUrl ? { referencePhotoUrl } : {})
     };
 
     try {
@@ -212,6 +298,25 @@ export default function Contact() {
       const docRef = doc(collection(db, 'payments'));
       await setDoc(docRef, paymentData);
       setPaymentDocId(docRef.id);
+
+      // Record the specific order in orders collection
+      const orderData = {
+        orderId,
+        artCode,
+        paymentId,
+        userId: user ? user.uid : "guest_" + Date.now(),
+        name: object.name,
+        email: object.email.toLowerCase(),
+        phone: object.phone,
+        message: object.message,
+        amount,
+        paymentStatus: 'Payment Submitted',
+        status: 'Payment Submitted',
+        createdAt: Date.now(),
+        ...(referencePhotoUrl ? { referencePhotoUrl } : {})
+      };
+      await setDoc(doc(db, 'orders', orderId), orderData);
+
       setPaymentState('PAYMENT_PENDING');
       setShowPaymentModal(true);
       setShowUtrSection(false);
@@ -227,7 +332,8 @@ export default function Contact() {
         upiId: UPI_ID,
         paymentStatus: 'PAYMENT_PENDING',
         paymentStartedAt: Date.now(),
-        formData: paymentData.formData
+        formData: paymentData.formData,
+        ...(referencePhotoUrl ? { referencePhotoUrl } : {})
       }));
 
       // Optional inquiry webhook for customer support record
@@ -716,6 +822,92 @@ export default function Contact() {
                 )}
               </div>
 
+              {/* Reference Photo (Optional) Section */}
+              <div id="reference-photo-section" className="bg-neutral-900/40 border border-white/10 p-5 rounded-3xl space-y-3">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-widest text-neutral-300">
+                      Reference Photo <span className="text-neutral-500 font-normal lowercase">(Optional)</span>
+                    </label>
+                    <p className="text-neutral-400 text-xs mt-0.5">
+                      Upload one photo showing the artwork/reference you want us to use.
+                    </p>
+                  </div>
+                </div>
+
+                <input 
+                  type="file"
+                  ref={fileInputRef}
+                  onChange={handleReferenceFileChange}
+                  accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
+                  className="hidden"
+                  id="reference-photo-upload"
+                  aria-label="Upload Reference Photo"
+                />
+
+                {!referenceFile ? (
+                  <div>
+                    <button
+                      type="button"
+                      id="btn-upload-reference-photo"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={status === 'sending'}
+                      className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full text-xs font-bold bg-white/5 border border-white/10 hover:border-amber-500/50 hover:bg-white/10 text-white transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <Upload size={14} className="text-amber-500" />
+                      Upload Reference Photo
+                    </button>
+                    <p className="text-[11px] text-neutral-500 mt-2">
+                      Accepts JPG, JPEG, PNG, or WEBP (Max 10MB, 1 photo)
+                    </p>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between p-3 bg-black/50 border border-white/10 rounded-2xl">
+                    <div className="flex items-center gap-3 min-w-0">
+                      {referencePreview && (
+                        <img 
+                          src={referencePreview} 
+                          alt="Reference Preview" 
+                          className="w-12 h-12 rounded-xl object-cover border border-white/10 shrink-0" 
+                        />
+                      )}
+                      <div className="min-w-0">
+                        <p className="text-xs font-medium text-white truncate max-w-[180px] sm:max-w-[260px]">
+                          {referenceFile.name}
+                        </p>
+                        <p className="text-[11px] text-neutral-400">
+                          {(referenceFile.size / (1024 * 1024)).toFixed(2)} MB
+                        </p>
+                        {referenceUploadStatus && (
+                          <p className="text-[11px] text-amber-400 font-semibold animate-pulse mt-0.5">
+                            {referenceUploadStatus}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      id="btn-remove-reference-photo"
+                      onClick={handleRemoveReferenceFile}
+                      disabled={status === 'sending'}
+                      className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium text-neutral-400 hover:text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-50 cursor-pointer"
+                      title="Remove selected photo"
+                    >
+                      <X size={14} />
+                      <span>Remove</span>
+                    </button>
+                  </div>
+                )}
+
+                {referenceError && (
+                  <p className="text-red-400 text-xs flex items-center gap-1.5 pt-1">
+                    <AlertCircle size={14} className="shrink-0" />
+                    {referenceError}
+                  </p>
+                )}
+              </div>
+
               <div className="bg-amber-500/5 border border-amber-500/10 p-4 rounded-2xl flex items-start gap-3 text-xs text-neutral-300">
                 <ShieldCheck className="text-amber-500 shrink-0 mt-0.5" size={20} />
                 <div className="space-y-1">
@@ -732,7 +924,7 @@ export default function Contact() {
                 {status === 'sending' ? (
                   <>
                     <div className="w-5 h-5 border-2 border-neutral-950/20 border-t-neutral-950 rounded-full animate-spin"></div>
-                    Securing Details...
+                    {referenceUploadStatus || 'Securing Details...'}
                   </>
                 ) : (
                   <>

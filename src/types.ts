@@ -84,3 +84,26 @@ export interface PopupConfig {
   maxShows?: number;
   frequency?: PopupFrequency;
 }
+
+export interface Order {
+  id?: string;
+  orderId: string;
+  artCode?: string;
+  paymentId?: string;
+  userId?: string;
+  name: string;
+  email: string;
+  phone?: string;
+  message?: string;
+  amount: number | string;
+  paymentStatus?: string;
+  status?: string;
+  transactionReference?: string;
+  createdAt: number;
+  referencePhotoUrl?: string;
+  subject?: string;
+  size?: string;
+  medium?: string;
+  framing?: string;
+  address?: string;
+}

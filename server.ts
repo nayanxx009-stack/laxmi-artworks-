@@ -165,6 +165,7 @@ async function verifyPaymentsBackground() {
                   verificationNote: `Auto Verified (IMAP) - Sender: ${parsed.from?.text || 'Unknown'}`
                 });
 
+                const refUrl = pay.referencePhotoUrl || pay.formData?.referencePhotoUrl;
                 const orderData = {
                   orderId: pay.orderId,
                   artCode: pay.artCode || pay.orderId,
@@ -178,10 +179,11 @@ async function verifyPaymentsBackground() {
                   paymentStatus: 'Paid',
                   status: 'Drafting & Concept',
                   transactionReference: utr || pay.manualUTR || parsed.messageId || 'IMAP-VERIFIED',
-                  createdAt: Date.now()
+                  createdAt: pay.timestamp || Date.now(),
+                  ...(refUrl ? { referencePhotoUrl: refUrl } : {})
                 };
                 
-                await setDoc(doc(db, 'orders', pay.orderId), orderData);
+                await setDoc(doc(db, 'orders', pay.orderId), orderData, { merge: true });
 
                 await updateDoc(doc(db, 'payments', pay.id), {
                   verificationStatus: 'Order Confirmed',

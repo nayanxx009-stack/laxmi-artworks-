@@ -16,6 +16,7 @@ export interface UploadProgressInfo {
 export interface CloudinaryUploadOptions {
   onProgress?: (info: UploadProgressInfo) => void;
   onXhrCreated?: (xhr: XMLHttpRequest) => void;
+  folder?: string;
 }
 
 export async function uploadToCloudinary(
@@ -37,7 +38,7 @@ export async function uploadToCloudinary(
   const formData = new FormData();
   formData.append('file', file);
   formData.append('upload_preset', uploadPreset);
-  formData.append('folder', 'popup');
+  formData.append('folder', options.folder || 'popup');
 
   return new Promise<CloudinaryUploadResult>((resolve, reject) => {
     const xhr = new XMLHttpRequest();

@@ -23,6 +23,7 @@ interface Inquiry {
   status: string;
   createdAt: number;
   trackingId?: string;
+  referencePhotoUrl?: string;
 }
 
 export default function InquiryStatusModal({ isOpen, onClose }: InquiryStatusModalProps) {
@@ -164,6 +165,16 @@ export default function InquiryStatusModal({ isOpen, onClose }: InquiryStatusMod
                           </div>
                           <h4 className="text-white font-bold text-base mt-1">{inq.name}</h4>
                           <p className="text-neutral-400 text-xs line-clamp-1 mt-0.5">{inq.message || "Custom Artwork Commission"}</p>
+                          {inq.referencePhotoUrl && (
+                            <div className="mt-2.5 flex items-center gap-2">
+                              <img 
+                                src={inq.referencePhotoUrl} 
+                                alt="Reference Artwork" 
+                                className="w-8 h-8 rounded-lg object-cover border border-white/10" 
+                              />
+                              <span className="text-[11px] text-amber-400 font-medium">Reference Attached</span>
+                            </div>
+                          )}
                         </div>
 
                         <div className="flex flex-col items-end gap-1.5">
