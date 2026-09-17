@@ -1,6 +1,6 @@
 // Laxmi Artworks FCM Service Worker
-// Version: 2.2.0 - Full Background & Foreground Web Push Handler
-const SW_VERSION = '2.2.0';
+// Version: 2.2.1 - Full Background & Foreground Web Push Handler
+const SW_VERSION = '2.2.1';
 
 importScripts('https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js');
 importScripts('https://www.gstatic.com/firebasejs/10.8.0/firebase-messaging-compat.js');
@@ -75,14 +75,12 @@ self.addEventListener('push', (event) => {
     url
   });
 
-  const origin = (self.location && self.location.origin) ? self.location.origin : '';
-  const defaultIcon = origin ? (origin + '/icon-192.png') : '/icon-192.png';
-  const defaultBadge = origin ? (origin + '/icon-192.png') : '/icon-192.png';
+  const bannerImage = notifPayload.image || dataPayload.image || rawPayload.fcmOptions?.image || null;
 
   const notificationOptions = {
     body,
-    icon: notifPayload.icon || dataPayload.icon || defaultIcon,
-    badge: notifPayload.badge || dataPayload.badge || defaultBadge,
+    icon: '/icon-192.png',
+    badge: '/icon-192.png',
     tag: dataPayload.tag || ('laxmi-push-' + (diagnosticId || Date.now())),
     renotify: true,
     requireInteraction: false,
@@ -92,6 +90,10 @@ self.addEventListener('push', (event) => {
       timestamp: Date.now()
     }
   };
+
+  if (bannerImage) {
+    notificationOptions.image = bannerImage;
+  }
 
   // Check window clients visibility & show notification
   event.waitUntil(

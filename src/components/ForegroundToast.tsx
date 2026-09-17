@@ -22,7 +22,7 @@ export default function ForegroundToast() {
       const title = payload.notification?.title || payload.data?.title || 'Laxmi Artworks';
       const body = payload.notification?.body || payload.data?.body || 'You have a new update.';
       const url = payload.data?.url || payload.fcmOptions?.link || '/';
-      const icon = payload.notification?.icon || '/vite.svg';
+      const icon = payload.notification?.icon || '/icon-192.png';
 
       setToast({ title, body, url, icon });
 
@@ -34,8 +34,8 @@ export default function ForegroundToast() {
               navigator.serviceWorker.ready.then(reg => {
                 reg.showNotification(title, {
                   body,
-                  icon,
-                  badge: icon,
+                  icon: '/icon-192.png',
+                  badge: '/icon-192.png',
                   tag: 'laxmi-fg-' + Date.now(),
                   data: { url }
                 });

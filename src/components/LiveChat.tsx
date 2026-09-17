@@ -62,7 +62,7 @@ export default function LiveChat() {
          try {
            new Notification(payload.notification?.title || 'New Message', {
              body: payload.notification?.body,
-             icon: '/vite.svg',
+             icon: '/icon-192.png',
              data: payload.data
            });
          } catch(e) {

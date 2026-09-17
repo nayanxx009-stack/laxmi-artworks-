@@ -1279,7 +1279,7 @@ async function startServer() {
             notification: {
               title: title.trim(),
               body: body.trim(),
-              icon: iconUrl || '/icon-192.png',
+              icon: '/icon-192.png',
               badge: '/icon-192.png',
               ...(imageUrl ? { image: imageUrl.trim() } : {}),
               requireInteraction: false
