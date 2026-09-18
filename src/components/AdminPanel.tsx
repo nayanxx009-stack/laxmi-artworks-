@@ -108,6 +108,12 @@ export default function AdminPanel() {
   const [editForm, setEditForm] = useState<any>({});
   const [selectedOrder, setSelectedOrder] = useState<any>(null);
   const [viewingRefPhoto, setViewingRefPhoto] = useState<string | null>(null);
+  const [sendingInvoiceOrderId, setSendingInvoiceOrderId] = useState<string | null>(null);
+  const [invoiceStatus, setInvoiceStatus] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
+
+  useEffect(() => {
+    setInvoiceStatus(null);
+  }, [selectedOrder?.id]);
 
   const siteConfig = useSiteConfig();
   const [localSiteConfig, setLocalSiteConfig] = useState<SiteConfig>(defaultSiteConfig);
@@ -389,6 +395,91 @@ export default function AdminPanel() {
       
     } catch (err) {
       console.error("Error saving doc", err);
+    }
+  };
+
+  const handleSendInvoice = async (order: any) => {
+    if (!order) return;
+    if (sendingInvoiceOrderId) return; // Prevent duplicate rapid clicks
+
+    const currentOrderId = order.orderId || order.id;
+    const currentCustomerEmail = (order.email || '').trim();
+    const currentCustomerName = order.name || 'Customer';
+
+    // 1. Check if customer email exists in this exact order
+    if (!currentCustomerEmail) {
+      const missingMsg = 'Customer email address is not available for this order.';
+      setInvoiceStatus({
+        type: 'error',
+        text: missingMsg
+      });
+      setSaveSuccessMessage(missingMsg);
+      return;
+    }
+
+    setSendingInvoiceOrderId(order.id);
+    setInvoiceStatus({
+      type: 'info',
+      text: 'Generating invoice PDF...'
+    });
+
+    try {
+      // 2. Generate the invoice PDF using the existing invoice generation system
+      let pdfBase64: string;
+      try {
+        pdfBase64 = await generateInvoice(order, 'base64');
+        if (!pdfBase64 || typeof pdfBase64 !== 'string') {
+          throw new Error('Generated PDF content is empty');
+        }
+      } catch (pdfErr: any) {
+        console.error('[INVOICE] Generation error:', pdfErr);
+        throw new Error('Failed to generate invoice PDF. Email was not sent.');
+      }
+
+      setInvoiceStatus({
+        type: 'info',
+        text: `Sending invoice to ${currentCustomerEmail}...`
+      });
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 25000);
+
+      const res = await fetch('/api/send-invoice', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderId: currentOrderId,
+          id: order.id,
+          email: currentCustomerEmail,
+          customerName: currentCustomerName,
+          order: order,
+          pdfBase64: pdfBase64
+        }),
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'Failed to send invoice. Check email credentials.');
+      }
+
+      setInvoiceStatus({
+        type: 'success',
+        text: "Invoice sent successfully to the customer's email."
+      });
+      setSaveSuccessMessage("Invoice sent successfully to the customer's email.");
+    } catch (err: any) {
+      console.error('[INVOICE] Sending error:', err);
+      const isAbort = err.name === 'AbortError' || err.message?.includes('abort');
+      const errText = isAbort ? 'Connection timed out while sending email.' : (err.message || 'Failed to send invoice.');
+      setInvoiceStatus({
+        type: 'error',
+        text: errText
+      });
+      setSaveSuccessMessage(`❌ ${errText}`);
+    } finally {
+      setSendingInvoiceOrderId(null);
     }
   };
 
@@ -1844,59 +1935,56 @@ export default function AdminPanel() {
                     </div>
                   </div>
                 ) : (
-                  <div className="flex flex-col sm:flex-row justify-between pt-4 border-t border-white/5 gap-3">
-                    <div className="flex gap-3">
-                      <button onClick={() => generateInvoice(selectedOrder, 'download')} className="flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-bold bg-amber-500 text-black hover:bg-amber-400">
-                        <Download size={16} /> Generate Invoice
-                      </button>
-                      <button onClick={async (e) => {
-                        const btn = e.currentTarget;
-                        btn.disabled = true;
-                        try {
-                          if (!selectedOrder.email) {
-                             throw new Error("Customer email missing");
-                          }
-                          setSaveSuccessMessage("Preparing invoice...");
-                          await new Promise(r => setTimeout(r, 600));
-                          
-                          setSaveSuccessMessage("Generating PDF...");
-                          const pdfBase64 = await generateInvoice(selectedOrder, 'base64');
-                          await new Promise(r => setTimeout(r, 600));
-                          
-                          setSaveSuccessMessage(`Sending invoice to ${selectedOrder.email}...`);
-                          
-                          const controller = new AbortController();
-                          const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout
-                          
-                          const res = await fetch('/api/send-invoice', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ email: selectedOrder.email, order: selectedOrder, pdfBase64 }),
-                            signal: controller.signal
-                          });
-                          clearTimeout(timeoutId);
-                          
-                          const data = await res.json().catch(() => ({}));
-                          if (!res.ok || !data.success) {
-                            throw new Error(data.error || 'Failed to send invoice. Check email credentials.');
-                          }
-                          
-                          setSaveSuccessMessage("✅ Invoice sent successfully");
-                          setTimeout(() => setSaveSuccessMessage(''), 5000);
-                        } catch (err: any) {
-                          const isAbort = err.name === 'AbortError' || err.message.includes('abort');
-                          setSaveSuccessMessage("❌ " + (isAbort ? "Connection timed out" : err.message));
-                          setTimeout(() => setSaveSuccessMessage(''), 7000);
-                        } finally {
-                          btn.disabled = false;
-                        }
-                      }} className="flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-bold bg-neutral-800 text-amber-500 border border-amber-500/30 hover:bg-neutral-700 disabled:opacity-50 disabled:cursor-not-allowed">
-                        <Mail size={16} /> Send Invoice
+                  <div className="space-y-3 pt-4 border-t border-white/5">
+                    {invoiceStatus && (
+                      <div className={`p-3.5 rounded-xl text-xs font-medium flex items-center gap-2.5 ${
+                        invoiceStatus.type === 'success' 
+                          ? 'bg-green-500/10 border border-green-500/30 text-green-400'
+                          : invoiceStatus.type === 'error'
+                          ? 'bg-red-500/10 border border-red-500/30 text-red-400'
+                          : 'bg-amber-500/10 border border-amber-500/30 text-amber-300'
+                      }`}>
+                        {invoiceStatus.type === 'success' && <CheckCircle2 size={16} className="shrink-0 text-green-400" />}
+                        {invoiceStatus.type === 'error' && <AlertCircle size={16} className="shrink-0 text-red-400" />}
+                        {invoiceStatus.type === 'info' && <Loader2 size={16} className="shrink-0 animate-spin text-amber-400" />}
+                        <span className="flex-1 leading-relaxed">{invoiceStatus.text}</span>
+                      </div>
+                    )}
+
+                    <div className="flex flex-col sm:flex-row justify-between gap-3">
+                      <div className="flex flex-wrap gap-3">
+                        <button 
+                          type="button"
+                          onClick={() => generateInvoice(selectedOrder, 'download')} 
+                          className="flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-bold bg-amber-500 text-black hover:bg-amber-400 cursor-pointer transition-colors"
+                        >
+                          <Download size={16} /> Generate Invoice
+                        </button>
+                        <button 
+                          type="button"
+                          disabled={sendingInvoiceOrderId === selectedOrder.id || !!sendingInvoiceOrderId}
+                          onClick={() => handleSendInvoice(selectedOrder)}
+                          className="flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-bold bg-neutral-800 text-amber-500 border border-amber-500/30 hover:bg-neutral-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer transition-colors"
+                        >
+                          {sendingInvoiceOrderId === selectedOrder.id ? (
+                            <>
+                              <Loader2 size={16} className="animate-spin" /> Sending...
+                            </>
+                          ) : (
+                            <>
+                              <Mail size={16} /> Send Invoice
+                            </>
+                          )}
+                        </button>
+                      </div>
+                      <button 
+                        type="button"
+                        onClick={() => { setEditingId(selectedOrder.id); setEditForm(selectedOrder); }} 
+                        className="flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-bold bg-white text-black hover:bg-neutral-200 cursor-pointer transition-colors"
+                      >
+                        <Edit2 size={16} /> Edit Order
                       </button>
                     </div>
-                    <button onClick={() => { setEditingId(selectedOrder.id); setEditForm(selectedOrder); }} className="flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-bold bg-white text-black hover:bg-neutral-200">
-                      <Edit2 size={16} /> Edit Order
-                    </button>
                   </div>
                 )}
               </div>
@@ -1913,7 +2001,7 @@ export default function AdminPanel() {
             initial={{ opacity: 0, y: 50 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 50 }}
-            className="fixed bottom-6 right-6 z-[200] bg-neutral-900 border border-white/10 text-white px-6 py-4 rounded-xl shadow-2xl flex items-center gap-3"
+            className="fixed bottom-6 right-6 z-[250] bg-neutral-900 border border-white/10 text-white px-6 py-4 rounded-xl shadow-2xl flex items-center gap-3"
           >
             {saveSuccessMessage}
           </motion.div>

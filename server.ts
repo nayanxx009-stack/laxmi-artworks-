@@ -1431,37 +1431,60 @@ async function startServer() {
   });
 
   app.post("/api/send-invoice", async (req, res) => {
-    const { email, order, pdfBase64 } = req.body;
-    
-    if (!email) {
-       return res.status(400).json({ success: false, error: 'Customer email is missing.' });
-    }
-    
-    // Validate email format
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-       return res.status(400).json({ success: false, error: 'Invalid customer email format.' });
-    }
-    
-
+    const { email, order, pdfBase64, orderId: reqOrderId, customerName: reqCustomerName } = req.body;
     
     try {
-      console.log(`[INVOICE] Request received for ${email}`);
-      console.log(`[EMAIL CONFIG]`);
-      console.log(`runtime: server`);
-      console.log(`GMAIL_USER: ${process.env.GMAIL_USER ? 'PRESENT' : 'MISSING'}`);
-      console.log(`GMAIL_APP_PASSWORD: ${process.env.GMAIL_APP_PASSWORD ? 'PRESENT' : 'MISSING'}`);
-      
-      const user = process.env.GMAIL_USER || process.env.IMAP_USER;
-      const pass = process.env.GMAIL_APP_PASSWORD || process.env.IMAP_PASS;
-      
-      if (!user || !pass) {
-          throw new Error('Email server credentials not configured (GMAIL_USER or GMAIL_APP_PASSWORD missing).');
+      let currentOrder = order || null;
+      let orderId = reqOrderId || currentOrder?.orderId || currentOrder?.id;
+      let customerEmail = (email || currentOrder?.email || '').trim();
+      let customerName = reqCustomerName || currentOrder?.name || '';
+
+      // If order data or customer email is missing, lookup from database by order ID
+      if ((!currentOrder || !customerEmail) && orderId) {
+        try {
+          const orderDoc = await getDoc(doc(db, 'orders', orderId));
+          if (orderDoc.exists()) {
+            currentOrder = { id: orderDoc.id, ...orderDoc.data() };
+          } else {
+            const q = query(collection(db, 'orders'), where('orderId', '==', orderId), limit(1));
+            const snap = await getDocs(q);
+            if (!snap.empty) {
+              currentOrder = { id: snap.docs[0].id, ...snap.docs[0].data() };
+            }
+          }
+          if (currentOrder) {
+            customerEmail = customerEmail || (currentOrder.email || '').trim();
+            customerName = customerName || currentOrder.name || '';
+            orderId = currentOrder.orderId || currentOrder.id || orderId;
+          }
+        } catch (dbErr: any) {
+          console.warn('[INVOICE] Order lookup error:', dbErr.message);
+        }
+      }
+
+      if (!customerEmail) {
+        return res.status(400).json({ success: false, error: 'Customer email address is not available for this order.' });
       }
       
-      console.log(`[INVOICE] Customer email validated`);
-      console.log(`[INVOICE] Preparing email`);
+      // Validate email format
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(customerEmail)) {
+        return res.status(400).json({ success: false, error: 'Invalid customer email format.' });
+      }
+
+      if (!pdfBase64 || typeof pdfBase64 !== 'string') {
+        return res.status(400).json({ success: false, error: 'Invoice PDF attachment is missing or broken.' });
+      }
+
+      console.log(`[INVOICE] Request received for ${customerEmail} (Order: ${orderId})`);
       
+      const user = (process.env.GMAIL_USER || process.env.IMAP_USER || '').trim().replace(/^["']|["']$/g, '');
+      const pass = (process.env.GMAIL_APP_PASSWORD || process.env.IMAP_PASS || '').replace(/\s+/g, '').replace(/^["']|["']$/g, '');
+      
+      if (!user || !pass) {
+        throw new Error('Email server credentials not configured (GMAIL_USER or GMAIL_APP_PASSWORD missing).');
+      }
+
       const transporter = nodemailer.createTransport({
         service: 'gmail',
         auth: {
@@ -1472,58 +1495,37 @@ async function startServer() {
         greetingTimeout: 10000,
         socketTimeout: 15000
       });
-      
-      console.log(`[INVOICE] Connecting to email service...`);
-      
-      // Verify transporter before sending
-      await transporter.verify().catch(err => {
-        console.error(`[INVOICE] FAILED verification: `, err.message);
-        throw new Error('Email service authentication or connection failed. Check credentials.');
-      });
-      
-      const invoiceNumber = order.orderId || order.id?.substring(0, 8).toUpperCase();
-      const amount = order.amount || '0';
-      const status = order.paymentStatus || 'Pending';
-      
+
+      const effectiveOrderId = orderId || currentOrder?.id || 'Document';
+      const effectiveCustomerName = customerName || 'Valued Customer';
+      const base64Content = pdfBase64.includes('base64,') ? pdfBase64.split('base64,')[1] : pdfBase64;
+
       const mailOptions = {
-        from: user,
-        to: email,
-        subject: `Laxmi Artworks — Invoice ${invoiceNumber} for Order ${order.orderId || order.id}`,
-        text: `Hello ${order.name || 'Customer'},
+        from: `Laxmi Artworks <${user}>`,
+        to: customerEmail,
+        subject: `Invoice for Order ${effectiveOrderId} - Laxmi Artworks`,
+        text: `Hello ${effectiveCustomerName},
 
-Thank you for choosing Laxmi Artworks.
+Please find attached the invoice for your Laxmi Artworks order ${effectiveOrderId}.
 
-Please find your invoice attached for Order ${order.orderId || order.id}.
-
-Invoice: ${invoiceNumber}
-Amount: ₹${amount}
-Payment Status: ${status}
-
-For any questions, please contact:
-support@laxmiartworks.com
-
-Regards,
-Laxmi Artworks
-NECRONIC IND. PVT. LTD.
-Tinsukia, Assam`,
+Thank you for choosing Laxmi Artworks.`,
         attachments: [
           {
-            filename: `Invoice_${order.orderId || order.id}.pdf`,
-            content: pdfBase64.split("base64,")[1],
+            filename: `Invoice-${effectiveOrderId}.pdf`,
+            content: base64Content,
             encoding: 'base64'
           }
         ]
       };
-      
-      console.log(`[INVOICE] Sending email to ${email}...`);
+
+      console.log(`[INVOICE] Sending email to ${customerEmail}...`);
       const info = await transporter.sendMail(mailOptions);
-      console.log(`[INVOICE] Email provider responded: ${info.messageId}`);
-      console.log(`[INVOICE] Completed`);
+      console.log(`[INVOICE] Email sent successfully: ${info.messageId}`);
       
-      res.json({ success: true });
+      return res.json({ success: true, messageId: info.messageId });
     } catch (err: any) {
       console.error('[INVOICE] FAILED:', err.message);
-      res.status(500).json({ success: false, error: err.message || 'SMTP Connection failed or rejected.' });
+      return res.status(500).json({ success: false, error: err.message || 'SMTP connection failed or rejected.' });
     }
   });
 
