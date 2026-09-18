@@ -909,7 +909,93 @@ export default function AdminPanel() {
                   {dashboardView === 'chat' && <AdminChat />}
                   {dashboardView === 'inquiries' && <AdminInquiries />}
                   {dashboardView === 'orders' && (
-                  <table className="w-full text-left border-collapse min-w-[800px]">
+                  <div>
+                    {/* Mobile Order Cards (Compact & Mobile-Friendly) */}
+                    <div className="md:hidden p-4 space-y-4">
+                      {loading && orders.length === 0 ? (
+                        <div className="p-8 text-center text-neutral-500">Loading orders...</div>
+                      ) : orders.length === 0 ? (
+                        <div className="p-8 text-center text-neutral-500">No orders found.</div>
+                      ) : (
+                        orders.map((order) => {
+                          const isMainAdminOrder = MASTER_ADMINS.includes(order.email?.toLowerCase());
+                          return (
+                            <div key={order.id} className={`p-4 rounded-2xl border transition-colors ${isMainAdminOrder ? 'bg-amber-500/5 border-amber-500/20' : 'bg-black/40 border-white/5'} space-y-3`}>
+                              <div className="flex items-start justify-between gap-2">
+                                <div>
+                                  {isMainAdminOrder && (
+                                    <div className="inline-flex items-center gap-1 mb-1.5 px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500 text-black animate-pulse">
+                                      ⭐ PRIORITY ADMIN ORDER
+                                    </div>
+                                  )}
+                                  <div className="text-xs font-mono text-amber-500">{order.orderId || order.id.slice(0,8)}</div>
+                                  <div className="text-xs text-neutral-400 mt-0.5">{new Date(order.createdAt).toLocaleDateString()} {new Date(order.createdAt).toLocaleTimeString()}</div>
+                                </div>
+                                <div className="text-right">
+                                  <div className="text-sm font-bold text-white">₹{order.amount || 0}</div>
+                                  {(order.paymentStatus?.includes('Verified') || order.paymentStatus === 'Paid') ? (
+                                    <span className="inline-flex items-center gap-1 text-[10px] font-bold text-green-400">
+                                      <CheckCircle2 size={10} /> Paid Advance
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-400">
+                                      <Clock size={10} /> {order.paymentStatus || 'Pending'}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div className="pt-2 border-t border-white/5 text-xs space-y-1">
+                                <div className="font-semibold text-white">{order.name}</div>
+                                <div className="text-neutral-400">{order.email}</div>
+                                {order.phone && <div className="text-neutral-400">{order.phone}</div>}
+                              </div>
+
+                              {/* Compact Reference Photo Section - only shown if this order has referencePhotoUrl */}
+                              {order.referencePhotoUrl && (
+                                <div className="p-2.5 bg-neutral-900 border border-white/10 rounded-xl flex items-center justify-between gap-3">
+                                  <div className="flex items-center gap-2.5 min-w-0">
+                                    <img 
+                                      src={order.referencePhotoUrl} 
+                                      alt={`Reference photo for ${order.orderId || order.id}`} 
+                                      className="w-11 h-11 rounded-lg object-cover border border-white/10 cursor-pointer hover:border-amber-500 transition-all shrink-0"
+                                      onClick={() => setViewingRefPhoto(order.referencePhotoUrl)}
+                                      title="Click to view full reference photo"
+                                    />
+                                    <div className="min-w-0">
+                                      <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-400 block">Reference Photo</span>
+                                      <span className="text-[11px] text-neutral-300 truncate block">Client reference</span>
+                                    </div>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => setViewingRefPhoto(order.referencePhotoUrl)}
+                                    className="shrink-0 inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white/10 hover:bg-amber-500 hover:text-black text-white transition-colors cursor-pointer"
+                                  >
+                                    <Eye size={13} /> View Photo
+                                  </button>
+                                </div>
+                              )}
+
+                              <div className="pt-2 border-t border-white/5 flex items-center justify-between gap-2">
+                                <div className="text-xs text-neutral-400">
+                                  Status: <span className="text-white font-medium">{order.status || 'Payment Submitted'}</span>
+                                </div>
+                                <button 
+                                  onClick={() => setSelectedOrder(order)}
+                                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-bold tracking-widest uppercase bg-white/5 border border-white/10 hover:bg-white hover:text-black transition-colors"
+                                >
+                                  <Edit2 size={12} /> Manage
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+
+                    {/* Desktop Table View */}
+                    <table className="hidden md:table w-full text-left border-collapse min-w-[800px]">
                     <thead>
                       <tr className="bg-black/20 text-xs uppercase tracking-wider text-neutral-500 font-semibold border-b border-white/5">
                         <th className="p-5 pl-6 whitespace-nowrap">Order Info</th>
@@ -952,21 +1038,24 @@ export default function AdminPanel() {
                               <div className="text-xs text-neutral-400">{order.email}</div>
                               <div className="text-xs text-neutral-400">{order.phone}</div>
                               {order.referencePhotoUrl && (
-                                <div className="mt-2 flex items-center gap-2">
+                                <div className="mt-2.5 p-2 bg-black/40 border border-white/10 rounded-xl inline-flex items-center gap-2.5">
                                   <img 
                                     src={order.referencePhotoUrl} 
-                                    alt="Ref" 
-                                    className="w-8 h-8 rounded-lg object-cover border border-white/10 cursor-pointer hover:border-amber-500 hover:scale-105 transition-all shrink-0"
+                                    alt={`Reference photo for ${order.orderId || order.id}`} 
+                                    className="w-10 h-10 rounded-lg object-cover border border-white/10 cursor-pointer hover:border-amber-500 hover:scale-105 transition-all shrink-0"
                                     onClick={(e) => { e.stopPropagation(); setViewingRefPhoto(order.referencePhotoUrl); }}
                                     title="Click to view full reference photo"
                                   />
-                                  <button
-                                    type="button"
-                                    onClick={(e) => { e.stopPropagation(); setViewingRefPhoto(order.referencePhotoUrl); }}
-                                    className="text-[11px] text-amber-400 hover:text-amber-300 hover:underline font-medium cursor-pointer flex items-center gap-1"
-                                  >
-                                    <ImageIcon size={11} /> Ref Photo
-                                  </button>
+                                  <div className="flex flex-col">
+                                    <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-400">Reference Photo</span>
+                                    <button
+                                      type="button"
+                                      onClick={(e) => { e.stopPropagation(); setViewingRefPhoto(order.referencePhotoUrl); }}
+                                      className="text-[11px] text-amber-400 hover:text-amber-300 hover:underline font-semibold cursor-pointer flex items-center gap-1 mt-0.5"
+                                    >
+                                      <Eye size={11} /> View Photo
+                                    </button>
+                                  </div>
                                 </div>
                               )}
                             </td>
@@ -1018,6 +1107,7 @@ export default function AdminPanel() {
                       )}
                     </tbody>
                   </table>
+                  </div>
                   )}
 
                   {dashboardView === 'users' && (
