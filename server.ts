@@ -1478,54 +1478,87 @@ async function startServer() {
 
       console.log(`[INVOICE] Request received for ${customerEmail} (Order: ${orderId})`);
       
-      const user = (process.env.GMAIL_USER || process.env.IMAP_USER || '').trim().replace(/^["']|["']$/g, '');
-      const pass = (process.env.GMAIL_APP_PASSWORD || process.env.IMAP_PASS || '').replace(/\s+/g, '').replace(/^["']|["']$/g, '');
-      
-      if (!user || !pass) {
-        throw new Error('Email server credentials not configured (GMAIL_USER or GMAIL_APP_PASSWORD missing).');
-      }
-
-      const transporter = nodemailer.createTransport({
-        service: 'gmail',
-        auth: {
-          user: user,
-          pass: pass
-        },
-        connectionTimeout: 15000,
-        greetingTimeout: 10000,
-        socketTimeout: 15000
-      });
-
       const effectiveOrderId = orderId || currentOrder?.id || 'Document';
       const effectiveCustomerName = customerName || 'Valued Customer';
       const base64Content = pdfBase64.includes('base64,') ? pdfBase64.split('base64,')[1] : pdfBase64;
 
-      const mailOptions = {
-        from: `Laxmi Artworks <${user}>`,
-        to: customerEmail,
+      const brevoApiKey = (process.env.BREVO_API_KEY || '').trim().replace(/^["']|["']$/g, '');
+      const brevoFromEmail = (process.env.BREVO_FROM_EMAIL || '').trim().replace(/^["']|["']$/g, '');
+      const brevoFromName = (process.env.BREVO_FROM_NAME || 'Laxmi Artworks').trim().replace(/^["']|["']$/g, '');
+
+      if (!brevoApiKey) {
+        throw new Error('Brevo API key not configured. Please set BREVO_API_KEY in your environment variables.');
+      }
+
+      const senderEmail = brevoFromEmail || process.env.EMAIL_FROM || process.env.GMAIL_USER || 'gargsubhalaxmi@gmail.com';
+      const senderName = brevoFromName || 'Laxmi Artworks';
+
+      console.log(`[INVOICE] Sending email to ${customerEmail} via Brevo HTTPS API (sender: ${senderName} <${senderEmail}>)...`);
+      
+      const payload = {
+        sender: {
+          name: senderName,
+          email: senderEmail
+        },
+        to: [
+          {
+            email: customerEmail,
+            name: effectiveCustomerName
+          }
+        ],
         subject: `Invoice for Order ${effectiveOrderId} - Laxmi Artworks`,
-        text: `Hello ${effectiveCustomerName},
+        textContent: `Hello ${effectiveCustomerName},
 
 Please find attached the invoice for your Laxmi Artworks order ${effectiveOrderId}.
 
 Thank you for choosing Laxmi Artworks.`,
-        attachments: [
+        htmlContent: `<div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+  <p>Hello <strong>${effectiveCustomerName}</strong>,</p>
+  <p>Please find attached the invoice for your Laxmi Artworks order <strong>${effectiveOrderId}</strong>.</p>
+  <p>Thank you for choosing Laxmi Artworks.</p>
+</div>`,
+        attachment: [
           {
-            filename: `Invoice-${effectiveOrderId}.pdf`,
-            content: base64Content,
-            encoding: 'base64'
+            name: `Invoice-${effectiveOrderId}.pdf`,
+            content: base64Content
           }
         ]
       };
 
-      console.log(`[INVOICE] Sending email to ${customerEmail}...`);
-      const info = await transporter.sendMail(mailOptions);
-      console.log(`[INVOICE] Email sent successfully: ${info.messageId}`);
-      
-      return res.json({ success: true, messageId: info.messageId });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+      try {
+        const apiRes = await fetch('https://api.brevo.com/v3/smtp/email', {
+          method: 'POST',
+          headers: {
+            'api-key': brevoApiKey,
+            'Content-Type': 'application/json',
+            'accept': 'application/json'
+          },
+          body: JSON.stringify(payload),
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+
+        const resData: any = await apiRes.json().catch(() => ({}));
+        if (!apiRes.ok) {
+          const errorMsg = resData.message || resData.error || `HTTP ${apiRes.status} from Brevo API`;
+          throw new Error(`Brevo API error: ${errorMsg}`);
+        }
+
+        console.log(`[INVOICE] Email sent successfully via Brevo API: ${resData.messageId || 'Success'}`);
+        return res.json({ success: true, messageId: resData.messageId, provider: 'brevo' });
+      } catch (fetchErr: any) {
+        clearTimeout(timeoutId);
+        if (fetchErr.name === 'AbortError' || fetchErr.message?.includes('abort')) {
+          throw new Error('Brevo API request timed out after 15 seconds.');
+        }
+        throw fetchErr;
+      }
     } catch (err: any) {
       console.error('[INVOICE] FAILED:', err.message);
-      return res.status(500).json({ success: false, error: err.message || 'SMTP connection failed or rejected.' });
+      return res.status(500).json({ success: false, error: err.message || 'Failed to send invoice via Email API.' });
     }
   });
 
