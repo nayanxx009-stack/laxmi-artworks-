@@ -100,16 +100,32 @@ export default function NotificationBanner() {
       return;
     }
 
-    // DIRECT NATIVE CALL ON USER GESTURE
-    console.log('[FCM] Calling Notification.requestPermission()');
-    let requestedPerm: NotificationPermission = 'default';
-    try {
-      requestedPerm = await Notification.requestPermission();
-      console.log(`[FCM] Permission result = ${requestedPerm}`);
-    } catch (permErr: any) {
-      console.error('[FCM] Permission request error:', permErr);
-      requestedPerm = Notification.permission;
-      console.log(`[FCM] Permission result = ${requestedPerm}`);
+    // Check current browser permission state first
+    let currentPerm: NotificationPermission = Notification.permission;
+    if (currentPerm === 'denied') {
+      setIsEnabling(false);
+      setPermission('denied');
+      setStatus({
+        type: 'error',
+        message: 'Notifications are blocked in your browser settings. Please click the lock or site settings icon in your address bar to allow notifications.'
+      });
+      return;
+    }
+
+    // Only request permission if not already granted
+    let requestedPerm: NotificationPermission = currentPerm;
+    if (requestedPerm !== 'granted') {
+      console.log('[FCM] Calling Notification.requestPermission() on user gesture');
+      try {
+        requestedPerm = await Notification.requestPermission();
+        console.log(`[FCM] Permission result = ${requestedPerm}`);
+      } catch (permErr: any) {
+        console.error('[FCM] Permission request error:', permErr);
+        requestedPerm = Notification.permission;
+        console.log(`[FCM] Permission result = ${requestedPerm}`);
+      }
+    } else {
+      console.log('[FCM] Notification permission already granted, skipping requestPermission prompt');
     }
 
     setPermission(requestedPerm);

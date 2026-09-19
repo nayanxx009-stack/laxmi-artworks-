@@ -646,20 +646,30 @@ async function startServer() {
 
   // Save Popup Configuration (Canonical Firestore document settings/popup ONLY)
   app.post("/api/admin/save-popup-config", async (req, res) => {
-    const { enabled, imageUrl, startAt, endAt, maxShows, frequency } = req.body;
     try {
-      const popupPayload = {
-        enabled: Boolean(enabled),
-        imageUrl: String(imageUrl || '').trim(),
-        startAt: startAt || null,
-        endAt: endAt || null,
-        maxShows: maxShows !== undefined && maxShows !== null && maxShows !== '' ? Number(maxShows) : 0,
-        frequency: frequency || 'every_visit'
-      };
+      const updateData: any = {};
+      if (req.body.enabled !== undefined) {
+        updateData.enabled = Boolean(req.body.enabled);
+      }
+      if (req.body.imageUrl !== undefined) {
+        updateData.imageUrl = String(req.body.imageUrl || '').trim();
+      }
+      if (req.body.startAt !== undefined) {
+        updateData.startAt = req.body.startAt || null;
+      }
+      if (req.body.endAt !== undefined) {
+        updateData.endAt = req.body.endAt || null;
+      }
+      if (req.body.maxShows !== undefined) {
+        updateData.maxShows = req.body.maxShows !== '' && req.body.maxShows !== null ? Number(req.body.maxShows) : 0;
+      }
+      if (req.body.frequency !== undefined) {
+        updateData.frequency = req.body.frequency || 'every_visit';
+      }
 
-      await setDoc(doc(db, 'settings', 'popup'), popupPayload);
-      console.log(`[Admin Save Popup API] Popup settings saved successfully:`, popupPayload);
-      res.json({ success: true });
+      await setDoc(doc(db, 'settings', 'popup'), updateData, { merge: true });
+      console.log(`[Admin Save Popup API] Popup settings saved successfully (merged):`, updateData);
+      res.json({ success: true, updated: updateData });
     } catch (err: any) {
       console.error('[Admin Save Popup API] Error saving popup config:', err.message);
       res.status(500).json({ success: false, error: err.message });

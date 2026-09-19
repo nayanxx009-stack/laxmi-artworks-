@@ -120,6 +120,8 @@ export default function AdminPanel() {
 
   // Popup Manager State (Clean & direct to canonical settings/popup)
   const [popupEnabled, setPopupEnabled] = useState<boolean>(false);
+  const [popupLoading, setPopupLoading] = useState<boolean>(true);
+  const [isTogglingPopup, setIsTogglingPopup] = useState<boolean>(false);
   const [savedPopupImageUrl, setSavedPopupImageUrl] = useState<string>('');
   const [popupStartAt, setPopupStartAt] = useState<string>('');
   const [popupEndAt, setPopupEndAt] = useState<string>('');
@@ -151,28 +153,34 @@ export default function AdminPanel() {
     setLocalSiteConfig(siteConfig);
   }, [siteConfig]);
 
-  // Load canonical settings/popup when popup tab is opened
+  // Real-time synchronization with canonical settings/popup
   useEffect(() => {
-    if (activeTab !== 'popup') return;
-    const fetchCanonicalPopup = async () => {
-      try {
-        const pSnap = await getDoc(doc(db, 'settings', 'popup'));
-        if (pSnap.exists()) {
-          const pData = pSnap.data();
+    const unsub = onSnapshot(
+      doc(db, 'settings', 'popup'),
+      (snapshot) => {
+        if (snapshot.exists()) {
+          const pData = snapshot.data();
           const activeImg = (typeof pData?.imageUrl === 'string' ? pData.imageUrl.trim() : '') || (typeof pData?.popupImage === 'string' ? pData.popupImage.trim() : '');
           setSavedPopupImageUrl(activeImg);
-          setPopupEnabled(Boolean(pData?.enabled));
+          setPopupEnabled(pData?.enabled === true);
           setPopupStartAt(typeof pData?.startAt === 'string' ? pData.startAt : '');
           setPopupEndAt(typeof pData?.endAt === 'string' ? pData.endAt : '');
           setPopupMaxShows(pData?.maxShows !== undefined && pData?.maxShows !== null ? Number(pData.maxShows) : 0);
           setPopupFrequency(pData?.frequency || 'every_visit');
+        } else {
+          setPopupEnabled(false);
+          setSavedPopupImageUrl('');
         }
-      } catch (err) {
-        console.warn('Notice loading canonical settings/popup:', err);
+        setPopupLoading(false);
+      },
+      (err) => {
+        console.warn('Notice listening to settings/popup:', err);
+        setPopupLoading(false);
       }
-    };
-    fetchCanonicalPopup();
-  }, [activeTab]);
+    );
+
+    return () => unsub();
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -574,6 +582,45 @@ export default function AdminPanel() {
     };
   };
 
+  const handleTogglePopupEnabled = async (newEnabled: boolean) => {
+    setIsTogglingPopup(true);
+    setPopupFeedback(null);
+    setPopupEnabled(newEnabled); // Optimistic UI update
+
+    try {
+      // 1. Direct Firestore write with merge: true so other fields (imageUrl, schedule, etc.) are never overwritten
+      try {
+        await setDoc(doc(db, 'settings', 'popup'), { enabled: newEnabled }, { merge: true });
+      } catch (clientWriteErr: any) {
+        console.warn('[AdminPanel] Direct Firestore toggle notice, using server endpoint:', clientWriteErr);
+        const res = await fetch('/api/admin/save-popup-config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: newEnabled })
+        });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || clientWriteErr.message || 'Failed to update popup status.');
+        }
+      }
+
+      setPopupFeedback({
+        type: 'success',
+        message: `✓ Popup is now switched ${newEnabled ? 'ON' : 'OFF'} and saved to settings/popup.`
+      });
+      setTimeout(() => setPopupFeedback(null), 4000);
+    } catch (toggleErr: any) {
+      console.error('Error toggling popup:', toggleErr);
+      setPopupEnabled(!newEnabled); // Rollback on failure
+      setPopupFeedback({
+        type: 'error',
+        message: `❌ Failed to update popup: ${toggleErr.message || 'Error occurred'}`
+      });
+    } finally {
+      setIsTogglingPopup(false);
+    }
+  };
+
   const executeSavePopup = async () => {
     setIsSavingPopup(true);
     setPopupFeedback(null);
@@ -601,7 +648,7 @@ export default function AdminPanel() {
         finalImageUrl = uploadResult.secure_url;
       }
 
-      // Save directly to settings/popup
+      // Save directly to settings/popup with merge: true to avoid blowing away unpassed fields
       const popupPayload = {
         enabled: Boolean(popupEnabled),
         imageUrl: finalImageUrl,
@@ -612,7 +659,7 @@ export default function AdminPanel() {
       };
 
       try {
-        await setDoc(doc(db, 'settings', 'popup'), popupPayload);
+        await setDoc(doc(db, 'settings', 'popup'), popupPayload, { merge: true });
       } catch (clientWriteErr: any) {
         // Fallback to server endpoint
         const res = await fetch('/api/admin/save-popup-config', {
@@ -1358,14 +1405,22 @@ export default function AdminPanel() {
               {/* Enable / Disable Toggle */}
               <div className="flex items-center justify-between border-b border-white/5 pb-4">
                 <div>
-                  <h3 className="font-bold text-white">Enable Popup</h3>
+                  <div className="flex items-center gap-2">
+                    <h3 className="font-bold text-white">Enable Popup</h3>
+                    {isTogglingPopup && (
+                      <span className="text-[11px] text-amber-400 font-normal flex items-center gap-1">
+                        <RefreshCw size={11} className="animate-spin" /> Persisting...
+                      </span>
+                    )}
+                  </div>
                   <p className="text-xs text-neutral-400">Turn the announcement popup on or off globally for all visitors.</p>
                 </div>
-                <label className="relative inline-flex items-center cursor-pointer">
+                <label className={`relative inline-flex items-center ${(popupLoading || isTogglingPopup) ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}>
                   <input
                     type="checkbox"
                     checked={popupEnabled}
-                    onChange={e => setPopupEnabled(e.target.checked)}
+                    disabled={popupLoading || isTogglingPopup}
+                    onChange={e => handleTogglePopupEnabled(e.target.checked)}
                     className="sr-only peer"
                   />
                   <div className="w-11 h-6 bg-neutral-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-500"></div>

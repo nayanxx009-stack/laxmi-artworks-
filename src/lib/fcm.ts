@@ -97,6 +97,62 @@ export async function getVapidKey(): Promise<string | undefined> {
   return undefined;
 }
 
+async function ensureServiceWorkerActive(initialReg: ServiceWorkerRegistration): Promise<ServiceWorkerRegistration> {
+  // If active is already activated, return immediately
+  if (initialReg.active && initialReg.active.state === 'activated') {
+    return initialReg;
+  }
+
+  let reg = initialReg;
+
+  // 1. If navigator.serviceWorker.ready is available, race with a safety timeout
+  if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+    try {
+      const readyReg = await Promise.race([
+        navigator.serviceWorker.ready,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000))
+      ]);
+      if (readyReg) {
+        reg = readyReg;
+        if (reg.active && reg.active.state === 'activated') {
+          return reg;
+        }
+      }
+    } catch (e) {
+      // Non-blocking
+    }
+  }
+
+  // 2. Identify active, waiting, or installing worker
+  const worker = reg.active || reg.waiting || reg.installing;
+  if (!worker || worker.state === 'activated') {
+    return reg;
+  }
+
+  // 3. Listen for statechange until activated or redundant
+  await new Promise<void>((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (!done) {
+        done = true;
+        try {
+          worker.removeEventListener('statechange', handleStateChange);
+        } catch (e) {}
+        resolve();
+      }
+    };
+    const handleStateChange = () => {
+      if (worker.state === 'activated' || worker.state === 'redundant') {
+        finish();
+      }
+    };
+    worker.addEventListener('statechange', handleStateChange);
+    setTimeout(finish, 4000); // 4 second fallback
+  });
+
+  return reg;
+}
+
 export const requestFCMToken = async (userId: string, email: string): Promise<FCMRegistrationResult> => {
   if (typeof window === 'undefined' || !('Notification' in window)) {
     console.warn("[FCM] Notification.permission = unsupported");
@@ -107,88 +163,148 @@ export const requestFCMToken = async (userId: string, email: string): Promise<FC
     // 1. Browser permission verification
     let permission = Notification.permission;
     if (permission !== 'granted') {
+      if (permission === 'denied') {
+        console.warn("[FCM] Permission status = denied");
+        return {
+          success: false,
+          error: 'Notifications are blocked in your browser settings. Please click the lock or site settings icon in your address bar to allow notifications.',
+          step: 'permission-denied'
+        };
+      }
       console.log("[FCM] Calling Notification.requestPermission()");
-      permission = await Notification.requestPermission();
+      try {
+        permission = await Notification.requestPermission();
+      } catch (permErr: any) {
+        console.error("[FCM] Permission request error:", permErr);
+        permission = Notification.permission;
+      }
       console.log(`[FCM] Permission result = ${permission}`);
     } else {
       console.log(`[FCM] Permission result = ${permission} (already granted)`);
     }
 
     if (permission !== 'granted') {
-      const errMsg = permission === 'denied' 
-        ? 'Notifications are blocked in browser settings. Please allow notifications in site settings or open the app in a new tab.' 
-        : 'Notification permission was not granted.';
+      const isDenied = permission === 'denied';
+      const errMsg = isDenied 
+        ? 'Notifications are blocked in your browser settings. Please allow notifications in site settings or the address bar icon.' 
+        : 'Notification permission was not granted. Please click Enable to try again.';
       console.warn(`[FCM] Permission status = ${permission} (${errMsg})`);
-      return { success: false, error: errMsg, step: 'browser-permission' };
+      return { 
+        success: false, 
+        error: errMsg, 
+        step: isDenied ? 'permission-denied' : 'permission-default' 
+      };
     }
 
     // 2. Firebase Messaging initialization
     const messaging = await getMessagingInstance();
     if (!messaging) {
       console.error("[FCM] Final status = FAILED (Firebase Messaging initialization failed)");
-      return { success: false, error: 'Firebase Messaging is not supported or failed to initialize in this browser.', step: 'firebase-init' };
+      return { 
+        success: false, 
+        error: 'Firebase Messaging could not be initialized in this browser. Please ensure you are browsing over HTTPS or localhost.', 
+        step: 'firebase-init' 
+      };
     }
 
     // 3. Service worker registration & readiness
+    if (!('serviceWorker' in navigator)) {
+      return { 
+        success: false, 
+        error: 'Service workers are not supported in this browser.', 
+        step: 'service-worker-unsupported' 
+      };
+    }
+
     let registration: ServiceWorkerRegistration;
     try {
       registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js', { scope: '/' });
-      try {
-        await registration.update();
-      } catch (upErr) {
-        // Non-blocking update check
-      }
-      const readyReg = await navigator.serviceWorker.ready;
-      if (readyReg) {
-        registration = readyReg;
-      }
-      console.log(`[FCM] Service worker registration = SUCCESS (${registration.scope})`);
+      console.log(`[FCM] Service worker registered (scope: ${registration.scope})`);
     } catch (swErr: any) {
-      console.error(`[FCM] Service worker registration = FAILED: ${swErr.message || swErr}`);
+      console.error(`[FCM] Service worker registration = FAILED:`, swErr);
       return { 
         success: false, 
-        error: `Service worker registration failed: ${swErr.message || swErr}`, 
-        step: 'service-worker-reg' 
+        error: `Service worker registration failed: ${swErr?.message || swErr}. Ensure the site is served over HTTPS.`, 
+        step: 'service-worker-registration' 
       };
+    }
+
+    // Ensure service worker is fully active and running before calling getToken
+    try {
+      registration = await ensureServiceWorkerActive(registration);
+      console.log(`[FCM] Service worker registration = SUCCESS and ACTIVE (scope: ${registration.scope}, state: ${registration.active?.state || 'ready'})`);
+    } catch (activeErr: any) {
+      console.warn(`[FCM] Service worker activation wait notice:`, activeErr);
     }
 
     // 4. VAPID configuration
     const vapidKey = await getVapidKey();
-    const isVapidPresent = !!(vapidKey && typeof vapidKey === 'string' && vapidKey.trim().length > 0);
-    console.log(`[FCM] VAPID key available = ${isVapidPresent ? 'YES' : 'NO'}`);
-
-    const getTokenOptions: any = { serviceWorkerRegistration: registration };
-    if (isVapidPresent && vapidKey) {
-      getTokenOptions.vapidKey = vapidKey;
+    if (!vapidKey || typeof vapidKey !== 'string' || vapidKey.trim().length === 0) {
+      console.error("[FCM] VAPID Key is missing or invalid");
+      return {
+        success: false,
+        error: 'Web Push credentials (VAPID key) are missing or invalid. Please check configuration.',
+        step: 'vapid-key-missing'
+      };
     }
+    console.log(`[FCM] VAPID key verified (${vapidKey.substring(0, 10)}...)`);
 
-    // 5. Calling getToken
+    const getTokenOptions: any = {
+      serviceWorkerRegistration: registration,
+      vapidKey: vapidKey.trim()
+    };
+
+    // 5. Calling getToken with retry loop
     console.log("[FCM] getToken = Calling Firebase getToken()...");
     let token = '';
-    try {
-      token = await getToken(messaging, getTokenOptions);
-    } catch (getTokenErr: any) {
-      console.error("[FCM] getToken = FAILED:", getTokenErr);
-      let userErrMsg = getTokenErr.message || 'Failed to generate FCM Web Push Token';
-      if (getTokenErr.code === 'messaging/missing-vapid-key') {
-        userErrMsg = 'VAPID public key is missing or not configured for Web Push. Web Push requires VITE_VAPID_KEY.';
-      } else if (getTokenErr.code === 'messaging/failed-service-worker-registration') {
-        userErrMsg = 'Service worker failed to register FCM token.';
+    let lastGetTokenError: any = null;
+
+    // Retry up to 3 attempts with progressive delay in case worker was finishing activation
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        token = await getToken(messaging, getTokenOptions);
+        if (token && token.trim().length > 0) {
+          break;
+        }
+      } catch (err: any) {
+        lastGetTokenError = err;
+        console.warn(`[FCM] getToken attempt ${attempt} notice:`, err?.code, err?.message || err);
+        if (attempt < 3) {
+          await new Promise((r) => setTimeout(r, 600 * attempt));
+          try {
+            const readyReg = await navigator.serviceWorker.ready;
+            if (readyReg) {
+              getTokenOptions.serviceWorkerRegistration = readyReg;
+            }
+          } catch (e) {}
+        }
       }
-      console.log(`[FCM] Final status = FAILED (${userErrMsg})`);
-      return { 
-        success: false, 
-        error: userErrMsg, 
-        code: getTokenErr.code, 
-        step: 'getToken' 
-      };
     }
 
     // 6. Token validation
     if (!token || token.trim().length === 0) {
-      console.error("[FCM] Token generated = FAILED (empty token)");
-      console.log("[FCM] Final status = FAILED (empty token)");
-      return { success: false, error: 'Firebase returned an empty notification token.', step: 'getToken' };
+      console.error("[FCM] getToken = FAILED after attempts:", lastGetTokenError);
+      const errCode = lastGetTokenError?.code || 'token-generation-failed';
+      let userErrMsg = 'Failed to generate notification token on this device. Please try again.';
+
+      if (lastGetTokenError?.message?.includes('no active Service Worker')) {
+        userErrMsg = 'The notification service worker is still activating. Please click Enable again.';
+      } else if (errCode === 'messaging/missing-vapid-key') {
+        userErrMsg = 'VAPID public key is missing or not configured for Web Push.';
+      } else if (errCode === 'messaging/failed-service-worker-registration') {
+        userErrMsg = 'Service worker failed to register for push notifications.';
+      } else if (lastGetTokenError?.message) {
+        userErrMsg = `Push registration failed: ${lastGetTokenError.message}`;
+      }
+
+      console.log(`[FCM] Final status = FAILED (${userErrMsg})`);
+      return { 
+        success: false, 
+        error: userErrMsg, 
+        code: errCode, 
+        step: 'token-generation',
+        details: lastGetTokenError?.message 
+      };
     }
     console.log(`[FCM] Token generated = SUCCESS (${token.substring(0, 16)}...)`);
 
